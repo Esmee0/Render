@@ -13,5 +13,5 @@ def receive_data():
 @app.route('/')
 def show_mario():
     # render pyramid lines on the homepage
-    html = "<h1>Mario (more)</h1><pre>{}</pre>".format("\n".join(lines))
+    html = "<h1>Mario More render page</h1><pre>{}</pre>".format("\n".join(lines))
     return render_template_string(html)
