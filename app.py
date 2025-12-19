@@ -39,8 +39,9 @@ def init_db():
 
 
 # Initialize database on startup
-if not os.path.exists(DB):
-    init_db()
+# Initialize database on startup in the container
+init_db()
+
 
 @app.route("/")
 def index():
