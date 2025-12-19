@@ -12,6 +12,8 @@ def get_db():
 def init_db():
     """Create the database and tables if they don't exist"""
     db = get_db()
+
+    # Tabel met robot-overzicht (die had je al)
     db.execute("""
         CREATE TABLE IF NOT EXISTS robots (
             robot_id TEXT PRIMARY KEY,
@@ -21,8 +23,20 @@ def init_db():
             last_data TEXT
         )
     """)
+
+    # 🔴 NIEUW: tabel voor ALLE robot logs
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS robot_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            robot_id TEXT,
+            timestamp TIMESTAMP,
+            message TEXT
+        )
+    """)
+
     db.commit()
     db.close()
+
 
 # Initialize database on startup
 if not os.path.exists(DB):
