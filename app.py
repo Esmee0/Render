@@ -24,7 +24,6 @@ def init_db():
         )
     """)
 
-    # 🔴 NIEUW: tabel voor ALLE robot logs
     db.execute("""
         CREATE TABLE IF NOT EXISTS robot_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
