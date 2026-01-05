@@ -1,159 +1,132 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Relayrace Robot Dashboard</title>
-    <style>
+  <title>Mini Tesla Auto Dashboard</title>
+  <style>
 body {
-  background: #171a20;
-  color: #f4f4f7;
-  font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
-  margin: 0;
-  padding: 0;
+  background: #181a1d;
+  color: #eee;
+  font-family: 'Segoe UI', 'Roboto', sans-serif;
   min-height: 100vh;
+  margin: 0;
+  display: flex; flex-direction: column; align-items: center;
 }
-
-h1, .dashboard-title {
-  font-weight: 700;
+h1 {
   text-align: center;
   margin: 2.5rem 0 2rem 0;
-  font-size: 3rem;
-  letter-spacing: 0.04em;
-  color: #eaeaea;
-  text-shadow: 0 6px 32px #000c;
-}
-
-#dashboard {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 2rem;
-  max-width: 1280px;
-  margin: 0 auto;
-}
-
-.robot-card {
-  background: #22252b;
-  border-radius: 1.5rem;
-  box-shadow: 0 6px 24px 0 rgba(0,0,0,0.30), 0 1.5px 6px 0 rgba(0,0,0,0.21);
-  max-width: 330px;
-  min-width: 220px;
-  min-height: 190px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 2rem 1.5rem 1.5rem 1.5rem;
-  position: relative;
-  transition: transform 0.13s, box-shadow 0.13s;
-}
-
-.robot-card:hover {
-  box-shadow: 0 16px 36px 2px #21c6cf44, 0 6px 24px 0 #000d;
-  transform: scale(1.03);
-}
-
-.robot-title {
-  font-size: 2.15rem;
-  font-weight: 600;
-  color: #32e6ff;
+  color: #3ed6fa;
+  font-size: 2.5rem;
   letter-spacing: 0.02em;
-  margin-bottom: 1.2rem;
-  text-shadow: 0 2px 8px #000b;
+  font-weight: 700;
+  text-shadow: 0 6px 30px #000c;
 }
-
-.robot-status {
-  font-size: 1.27rem;
+#tesla-car-wrapper {
+  background: #21252b;
+  border-radius: 1.7rem;
+  box-shadow: 0 6px 30px #0196df26;
+  padding: 2rem 3rem 2.2rem 3rem;
+  display: flex; flex-direction: column; align-items: center;
+  margin: 2rem 0 1rem 0;
+  min-width: 260px;
+}
+.tesla-car-svg {
+  width: 180px;
+  height: 86px;
+  margin-bottom: 1.16rem;
+  display: block;
+}
+.status-box {
+  text-align: center;
+  margin: 0.8rem 0 0 0;
+  font-size: 1.2rem;
   font-weight: 500;
-  margin: 0.5rem 0 0 0;
   letter-spacing: 0.01em;
+  min-height: 1.8em;
 }
-
-.robot-status.obstacle {
-  color: #ff4848;
-  font-weight: 700;
+.status-box.obstacle { color: #ff4848; }
+.status-box.moving { color: #39ffb2; }
+.status-box.waiting { color: #ffd700; }
+#last-seen, #ping-count {
+  font-size: 0.95em;
+  margin: 0.35em 0;
+  color: #95d5e7;
+  text-align: center;
 }
-
-.robot-status.waiting {
-  color: #ffd700;
-  font-weight: 700;
-}
-
-.robot-status.moving {
-  color: #51fc98;
-  font-weight: 700;
-}
-
-.status-indicator {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  margin-bot: 8px;
-  display: inline-block;
-  vertical-align: middle;
-  box-shadow: 0 0 18px 2px #0009;
-}
-
-.status-indicator.obstacle {
-  background: #ff3848;
-  box-shadow: 0 0 26px 2px #ff748044;
-}
-
-.status-indicator.waiting {
-  background: #ffd700;
-  box-shadow: 0 0 20px 2px #ffd70044;
-}
-
-.status-indicator.moving {
-  background: #02e587;
-  box-shadow: 0 0 16px 2px #02e58744;
-}
-
-@media (max-width: 800px) {
-  #dashboard {
-    flex-direction: column;
-    align-items: center;
-    gap: 1.2rem;
-  }
-  h1 {
-    font-size: 2rem;
-  }
-  .robot-card {
-    max-width: 98vw;
-    min-width: 0;
-    padding: 1.2rem 0.5rem 1rem 0.5rem;
-  }
-}
-
-::-webkit-scrollbar {
-  width: 9px;
-  background: #191d23;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #31343c;
-  border-radius: 8px;
-}
-    </style>
+  </style>
 </head>
 <body>
-<h1 class="dashboard-title">🚦 Relayrace Robot Dashboard</h1>
-<div id="dashboard"></div>
+<h1>🚙 Relayrace Tesla-style Dashboard</h1>
+<div id="tesla-car-wrapper">
+  <!-- Minimalistische Tesla-style auto SVG -->
+  <svg class="tesla-car-svg" viewBox="0 0 180 86" fill="none">
+    <!-- Car shadow -->
+    <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
+    <!-- Car base -->
+    <rect x="27" y="44" width="126" height="23" rx="11" id="car-body-outline" fill="#15171a"/>
+    <rect x="30" y="42" width="120" height="19" rx="9" id="car-body" fill="#23bffe"/>
+    <!-- Windshield -->
+    <rect x="75" y="37" width="30" height="13" rx="6.5" id="car-glass" fill="#fff" fill-opacity="0.72"/>
+    <!-- Left wheel -->
+    <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+    <!-- Right wheel -->
+    <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+    <!-- Headlights -->
+    <ellipse cx="31" cy="53" rx="4" ry="2" fill="#fffbe0" id="left-light" />
+    <ellipse cx="148" cy="53" rx="4" ry="2" fill="#fffbe0" id="right-light" />
+  </svg>
+  <div class="status-box" id="robot-status">Wachten op data...</div>
+  <div id="last-seen"></div>
+  <div id="ping-count"></div>
+</div>
 <script>
 async function fetchRobots() {
     const res = await fetch("/api/robots");
     const robots = await res.json();
-    document.getElementById('dashboard').innerHTML =
-      robots.map(r => `
-        <div class="robot-card">
-          <div class="robot-title">🤖 ${r.robot_name} <span style="font-size:0.9em; color:#aaa;">(${r.robot_id})</span></div>
-          <div class="robot-status ${r.last_data && r.last_data.toLowerCase().includes('obstacle')?'obstacle':r.last_data && r.last_data.toLowerCase().includes('wait')?'waiting':'moving'}">
-            ${r.last_data ? r.last_data : '<span style="color:#555;">n.v.t.</span>'}
-          </div>
-          <div style="font-size:0.9em; margin-top:10px; color:#8fa;">Laatste ping: <span style="color:#ddd;">${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</span></div>
-          <div style="font-size:0.9em; margin-top:2px; color:#aaa;">Aantal pings: ${r.ping_count}</div>
-        </div>
-      `).join('');
+    if (robots.length === 0) {
+        document.getElementById('robot-status').textContent = "Robot offline";
+        document.getElementById('car-body').setAttribute('fill', '#999');
+        document.getElementById('car-glass').setAttribute('fill', '#cccccc');
+        document.getElementById('left-light').setAttribute('fill', '#adacac');
+        document.getElementById('right-light').setAttribute('fill', '#adacac');
+        document.getElementById('last-seen').textContent = "";
+        document.getElementById('ping-count').textContent = "";
+        return;
+    }
+    const r = robots[0];
+    let status = r.last_data?.toLowerCase() || "";
+    const statusDiv = document.getElementById('robot-status');
+    if (status.includes("obstacle")) {
+        statusDiv.textContent = r.last_data;
+        statusDiv.className = "status-box obstacle";
+        document.getElementById('car-body').setAttribute('fill', '#ff4848');
+        document.getElementById('car-glass').setAttribute('fill', '#ffd7c0');
+        document.getElementById('left-light').setAttribute('fill', '#ffe3d6');
+        document.getElementById('right-light').setAttribute('fill', '#ffe3d6');
+    } else if (status.includes("wait")) {
+        statusDiv.textContent = r.last_data;
+        statusDiv.className = "status-box waiting";
+        document.getElementById('car-body').setAttribute('fill', '#ffd700');
+        document.getElementById('car-glass').setAttribute('fill', '#fffbe4');
+        document.getElementById('left-light').setAttribute('fill', '#fffbe0');
+        document.getElementById('right-light').setAttribute('fill', '#fffbe0');
+    } else if(status) {
+        statusDiv.textContent = r.last_data;
+        statusDiv.className = "status-box moving";
+        document.getElementById('car-body').setAttribute('fill', '#23bffe');
+        document.getElementById('car-glass').setAttribute('fill', '#fff');
+        document.getElementById('left-light').setAttribute('fill', '#fffbe0');
+        document.getElementById('right-light').setAttribute('fill', '#fffbe0');
+    } else {
+        statusDiv.textContent = "Geen status ontvangen";
+        statusDiv.className = "status-box";
+        document.getElementById('car-body').setAttribute('fill', '#666');
+        document.getElementById('car-glass').setAttribute('fill', '#cccccc');
+        document.getElementById('left-light').setAttribute('fill', '#adacac');
+        document.getElementById('right-light').setAttribute('fill', '#adacac');
+    }
+    document.getElementById('last-seen').textContent = 'Laatste ping: ' + (r.last_seen ? new Date(r.last_seen).toLocaleString() : '-');
+    document.getElementById('ping-count').textContent = 'Aantal pings: ' + r.ping_count;
 }
-// Init
 fetchRobots();
 setInterval(fetchRobots, 1500);
 </script>
