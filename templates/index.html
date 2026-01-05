@@ -79,7 +79,7 @@ h1 {
 <h1>Relayrace dashboard</h1>
 <div id="robot-cars-container"></div>
 <script>
-// Kleur & status logic per robot
+// colors and status based on last_data text
 function getStatusProps(statusText, isOffline) {
   if (isOffline) {
       return {
@@ -98,7 +98,7 @@ function getStatusProps(statusText, isOffline) {
   };
   return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline'}
 }
-// HTML voor 1 robotkaart
+// HTML for 1 robot
 function formatCarBox(r, isOffline=false) {
   let stprops = getStatusProps(r.last_data, isOffline);
   return `
@@ -115,25 +115,25 @@ function formatCarBox(r, isOffline=false) {
       <ellipse cx="148" cy="53" rx="4" ry="2" fill="${stprops.lights}" />
     </svg>
     <div class="status-box ${stprops.status}">
-      ${isOffline ? "Offline" : (r.last_data ? r.last_data : "Geen status")}
+      ${isOffline ? "Offline" : (r.last_data ? r.last_data : "No status")}
     </div>
-    <div id="last-seen">Laatste ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
-    <div id="ping-count">Aantal pings: ${r.ping_count}</div>
+    <div id="last-seen">last ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
+    <div id="ping-count">Ping count: ${r.ping_count}</div>
   </div>
 `;}
 async function fetchRobots() {
     const res = await fetch("/api/robots");
     let robots = await res.json();
     let now = Date.now();
-    // Sorteer robots op id (voor vaste plek: R1, R2, R3)
+    // Sort robots by id (for fixed position: R1, R2, R3)
     robots = robots.sort((a, b) => (a.robot_id||"").localeCompare(b.robot_id||""));
 
-    // Bouw een map per id, en verzamel id's
+    // Build a map per id, and collect ids
     let robotMap = {};
     robots.forEach(r => { robotMap[r.robot_id] = r; });
     let ids = robots.map(r => r.robot_id);
 
-    // Vul lege plekken aan tot 3 (geef bv. R1, R2, R3 als default)
+    // Fill empty spots up to 3 (e.g., R1, R2, R3 as default)
     let ids_set = new Set(ids);
     while(ids.length < 3) {
         let candidate = "R" + (ids.length + 1);
@@ -143,7 +143,7 @@ async function fetchRobots() {
         ids.push(candidate);
         ids_set.add(candidate);
     }
-    // Per id toon robot live, of offline/placeholder als niet actief
+    // Per id show robot live, or offline/placeholder if not active
     let html = ids.slice(0,3).map(id => {
         let r = robotMap[id] || {robot_id:id, robot_name:id, ping_count:0};
         let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
