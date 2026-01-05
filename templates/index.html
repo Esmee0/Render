@@ -20,15 +20,24 @@ h1 {
   font-weight: 700;
   text-shadow: 0 6px 30px #000c;
 }
-#tesla-car-wrapper {
-  background: #21252b;
+#robot-cars-container {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+  margin-bottom: 3rem;
+}
+.robot-car-box {
+  background: #23252d;
   border-radius: 1.7rem;
   box-shadow: 0 6px 30px #0196df26;
   padding: 2rem 3rem 2.2rem 3rem;
   display: flex; flex-direction: column; align-items: center;
-  margin: 2rem 0 1rem 0;
-  min-width: 260px;
+  margin: 1.5rem 0 1rem 0;
+  min-width: 260px; max-width: 340px;
+  transition: transform 0.12s;
 }
+.robot-car-box:hover { transform: scale(1.03);}
 .tesla-car-svg {
   width: 180px;
   height: 86px;
@@ -46,85 +55,103 @@ h1 {
 .status-box.obstacle { color: #ff4848; }
 .status-box.moving { color: #39ffb2; }
 .status-box.waiting { color: #ffd700; }
+.status-box.offline { color: #8f96a7; }
 #last-seen, #ping-count {
   font-size: 0.95em;
   margin: 0.35em 0;
   color: #95d5e7;
   text-align: center;
 }
+.robot-title {
+  color: #32e6ff;
+  margin-bottom: 0.3em;
+  font-weight: 600;
+  font-size: 1.26em;
+  text-align: center;
+}
+@media (max-width:900px) {
+  #robot-cars-container { flex-direction: column; align-items: center;}
+  .robot-car-box { min-width: 70vw; max-width: 99vw;}
+}
   </style>
 </head>
 <body>
 <h1>Relayrace dashboard</h1>
-<div id="tesla-car-wrapper">
-  <svg class="tesla-car-svg" viewBox="0 0 180 86" fill="none">
-    <!-- Car shadow -->
-    <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
-    <!-- Car base -->
-    <rect x="27" y="44" width="126" height="23" rx="11" id="car-body-outline" fill="#15171a"/>
-    <rect x="30" y="42" width="120" height="19" rx="9" id="car-body" fill="#23bffe"/>
-    <!-- Windshield -->
-    <rect x="75" y="37" width="30" height="13" rx="6.5" id="car-glass" fill="#fff" fill-opacity="0.72"/>
-    <!-- Left wheel -->
-    <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
-    <!-- Right wheel -->
-    <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
-    <!-- Headlights -->
-    <ellipse cx="31" cy="53" rx="4" ry="2" fill="#fffbe0" id="left-light" />
-    <ellipse cx="148" cy="53" rx="4" ry="2" fill="#fffbe0" id="right-light" />
-  </svg>
-  <div class="status-box" id="robot-status">Waiting for data..</div>
-  <div id="last-seen"></div>
-  <div id="ping-count"></div>
-</div>
+<div id="robot-cars-container"></div>
 <script>
+// Kleur & status logic per robot
+function getStatusProps(statusText, isOffline) {
+  if (isOffline) {
+      return {
+          fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline'
+      };
+  }
+  let L = (statusText||"").toLowerCase();
+  if (L.includes("obstacle")) return {
+      fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle'
+  };
+  if (L.includes("wait")) return {
+      fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting'
+  };
+  if (L.length>1) return {
+      fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving'
+  };
+  return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline'}
+}
+// HTML voor 1 robotkaart
+function formatCarBox(r, isOffline=false) {
+  let stprops = getStatusProps(r.last_data, isOffline);
+  return `
+  <div class="robot-car-box">
+    <div class="robot-title">${r.robot_name || r.robot_id} <span style="font-size:0.8em; color:#bababa;">(${r.robot_id})</span></div>
+    <svg class="tesla-car-svg" viewBox="0 0 180 86" fill="none">
+      <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
+      <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
+      <rect x="30" y="42" width="120" height="19" rx="9" fill="${stprops.fill}"/>
+      <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${stprops.glass}" fill-opacity="0.72"/>
+      <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+      <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+      <ellipse cx="31" cy="53" rx="4" ry="2" fill="${stprops.lights}" />
+      <ellipse cx="148" cy="53" rx="4" ry="2" fill="${stprops.lights}" />
+    </svg>
+    <div class="status-box ${stprops.status}">
+      ${isOffline ? "Offline" : (r.last_data ? r.last_data : "Geen status")}
+    </div>
+    <div id="last-seen">Laatste ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
+    <div id="ping-count">Aantal pings: ${r.ping_count}</div>
+  </div>
+`;}
 async function fetchRobots() {
     const res = await fetch("/api/robots");
-    const robots = await res.json();
-    if (robots.length === 0) {
-        document.getElementById('robot-status').textContent = "Robot offline";
-        document.getElementById('car-body').setAttribute('fill', '#999');
-        document.getElementById('car-glass').setAttribute('fill', '#cccccc');
-        document.getElementById('left-light').setAttribute('fill', '#adacac');
-        document.getElementById('right-light').setAttribute('fill', '#adacac');
-        document.getElementById('last-seen').textContent = "";
-        document.getElementById('ping-count').textContent = "";
-        return;
+    let robots = await res.json();
+    let now = Date.now();
+    // Sorteer robots op id (voor vaste plek: R1, R2, R3)
+    robots = robots.sort((a, b) => (a.robot_id||"").localeCompare(b.robot_id||""));
+
+    // Bouw een map per id, en verzamel id's
+    let robotMap = {};
+    robots.forEach(r => { robotMap[r.robot_id] = r; });
+    let ids = robots.map(r => r.robot_id);
+
+    // Vul lege plekken aan tot 3 (geef bv. R1, R2, R3 als default)
+    let ids_set = new Set(ids);
+    while(ids.length < 3) {
+        let candidate = "R" + (ids.length + 1);
+        while(ids_set.has(candidate)) {
+            candidate = "R" + (Math.floor(Math.random()*300)+10);
+        }
+        ids.push(candidate);
+        ids_set.add(candidate);
     }
-    const r = robots[0];
-    let status = r.last_data?.toLowerCase() || "";
-    const statusDiv = document.getElementById('robot-status');
-    if (status.includes("obstacle")) {
-        statusDiv.textContent = r.last_data;
-        statusDiv.className = "status-box obstacle";
-        document.getElementById('car-body').setAttribute('fill', '#ff4848');
-        document.getElementById('car-glass').setAttribute('fill', '#ffd7c0');
-        document.getElementById('left-light').setAttribute('fill', '#ffe3d6');
-        document.getElementById('right-light').setAttribute('fill', '#ffe3d6');
-    } else if (status.includes("wait")) {
-        statusDiv.textContent = r.last_data;
-        statusDiv.className = "status-box waiting";
-        document.getElementById('car-body').setAttribute('fill', '#ffd700');
-        document.getElementById('car-glass').setAttribute('fill', '#fffbe4');
-        document.getElementById('left-light').setAttribute('fill', '#fffbe0');
-        document.getElementById('right-light').setAttribute('fill', '#fffbe0');
-    } else if(status) {
-        statusDiv.textContent = r.last_data;
-        statusDiv.className = "status-box moving";
-        document.getElementById('car-body').setAttribute('fill', '#23bffe');
-        document.getElementById('car-glass').setAttribute('fill', '#fff');
-        document.getElementById('left-light').setAttribute('fill', '#fffbe0');
-        document.getElementById('right-light').setAttribute('fill', '#fffbe0');
-    } else {
-        statusDiv.textContent = "No data received";
-        statusDiv.className = "status-box";
-        document.getElementById('car-body').setAttribute('fill', '#666');
-        document.getElementById('car-glass').setAttribute('fill', '#cccccc');
-        document.getElementById('left-light').setAttribute('fill', '#adacac');
-        document.getElementById('right-light').setAttribute('fill', '#adacac');
-    }
-    document.getElementById('last-seen').textContent = 'Last ping: ' + (r.last_seen ? new Date(r.last_seen).toLocaleString() : '-');
-    document.getElementById('ping-count').textContent = 'Ping count: ' + r.ping_count;
+    // Per id toon robot live, of offline/placeholder als niet actief
+    let html = ids.slice(0,3).map(id => {
+        let r = robotMap[id] || {robot_id:id, robot_name:id, ping_count:0};
+        let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
+        let secondsSincePing = ((now - lastPing)/1000);
+        let isOffline = (!r.last_seen) || (secondsSincePing > 10);
+        return formatCarBox(r, isOffline);
+    }).join('\n');
+    document.getElementById('robot-cars-container').innerHTML = html;
 }
 fetchRobots();
 setInterval(fetchRobots, 1500);
