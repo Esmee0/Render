@@ -124,8 +124,8 @@ async function fetchRobots() {
         document.getElementById('left-light').setAttribute('fill', '#adacac');
         document.getElementById('right-light').setAttribute('fill', '#adacac');
     }
-    document.getElementById('last-seen').textContent = 'Laatste ping: ' + (r.last_seen ? new Date(r.last_seen).toLocaleString() : '-');
-    document.getElementById('ping-count').textContent = 'Aantal pings: ' + r.ping_count;
+    document.getElementById('last-seen').textContent = 'Last ping: ' + (r.last_seen ? new Date(r.last_seen).toLocaleString() : '-');
+    document.getElementById('ping-count').textContent = 'Ping count: ' + r.ping_count;
 }
 fetchRobots();
 setInterval(fetchRobots, 1500);
