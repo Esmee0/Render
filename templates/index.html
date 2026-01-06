@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Relayrobot Dashboard - Focus Switch</title>
+  <title>Relayrobot Dashboard - Altijd 3 Auto's</title>
   <style>
 body {
   background: #181a1d;
@@ -95,10 +95,13 @@ h1 {
 <h1>Relayrobot Dashboard</h1>
 <div id="dashboard-flex"></div>
 <script>
+// === Altijd 3 plekken: "R1", "R2", "R3" ===
+const robotIdList = ["R1", "R2", "R3"];
 let allRobots = [];
+let robotMap = {};
 let focusRobotId = null;
-let lastRobotIds = "";
 
+// Helper: statuskleuren
 function getStatusProps(statusText, isOffline) {
   if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
   let L = (statusText||"").toLowerCase();
@@ -127,7 +130,7 @@ function formatRobotCard(r, isOffline, isBig, selected) {
       ${isOffline ? "Offline" : (r.last_data ? r.last_data : "Geen status")}
     </div>
     <div id="last-seen">Laatste ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
-    <div id="ping-count">Aantal pings: ${r.ping_count}</div>
+    <div id="ping-count">Aantal pings: ${r.ping_count||0}</div>
     ${isBig ? `
     <div id="focus-controls">
       <button class="control-btn" onclick="sendRobotCommand('${r.robot_id}', 'START');event.stopPropagation();">&#9654; Aan</button>
@@ -139,16 +142,13 @@ async function fetchRobots() {
     const res = await fetch("/api/robots");
     let robots = await res.json();
     let now = Date.now();
-    // Sorteer robots op id, max 3 zichtbaar
-    robots = robots.sort((a, b) => (a.robot_id||"").localeCompare(b.robot_id||""));
-    robots = robots.slice(0,3);
-    allRobots = robots;
-    // Reset focus als robots veranderen van id/volgorde of aantal
-    let idString = robots.map(r=>r.robot_id).join(",");
-    if (idString!==lastRobotIds) {
-      focusRobotId = null;
-      lastRobotIds = idString;
-    }
+    robotMap = {};
+    robots.forEach(r=>{ robotMap[r.robot_id]=r;});
+    // Vul alle plekken met data of placeholders
+    allRobots = robotIdList.map(id => {
+      let r = robotMap[id] || {robot_id:id, robot_name:id, ping_count:0, last_seen:null, last_data:""};
+      return r;
+    });
     updateDisplay();
 }
 function updateDisplay() {
@@ -159,65 +159,56 @@ function updateDisplay() {
     dashboard.innerHTML = `<div class="robot-card"><div class="robot-title">Geen robot online</div></div>`;
     return;
   }
-  if(!focusRobotId) {
-    // Standaard: alle robots naast elkaar, allemaal even groot
+  // Focus view
+  if(focusRobotId){
+    let bigIx = allRobots.findIndex(r=>r.robot_id===focusRobotId);
+    // Bouw array: kleine voor, grote in midden, kleine na
+    let cards = [];
+    // links klein
+    for(let i=0;i<allRobots.length;i++){
+      if(i!==bigIx) cards.push(i);
+    }
+    // links en rechts verdelen
+    let leftIx = cards[0], rightIx = cards[1];
+    dashboard.innerHTML = '';
+    if(leftIx!==undefined) {
+      let rL = allRobots[leftIx];
+      let lastPing = rL.last_seen ? new Date(rL.last_seen).getTime() : 0;
+      let isOffline = (!rL.last_seen) || ((now - lastPing)/1000 > 10);
+      dashboard.innerHTML += formatRobotCard(rL, isOffline, false, false);
+    }
+    // groot centraal
+    let r = allRobots[bigIx];
+    let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
+    let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
+    dashboard.innerHTML += formatRobotCard(r, isOffline, true, true);
+    if(rightIx!==undefined){
+      let rR = allRobots[rightIx];
+      let lastPing = rR.last_seen ? new Date(rR.last_seen).getTime() : 0;
+      let isOffline = (!rR.last_seen) || ((now - lastPing)/1000 > 10);
+      dashboard.innerHTML += formatRobotCard(rR, isOffline, false, false);
+    }
+    // Add eventlisteners — grote: klik = uit focus, kleine: klik = focus die
+    Array.from(document.querySelectorAll('.robot-card, .robot-card-big')).forEach(el => {
+      let id = el.getAttribute("data-id");
+      if(id === focusRobotId) {
+        el.onclick = ()=> { focusRobotId=null; updateDisplay();}
+        el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId=null; updateDisplay();}}
+      } else {
+        el.onclick = ()=> { focusRobotId=id; updateDisplay();}
+        el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId=id; updateDisplay();}}
+      }
+    });
+  }else{
+    // Normaal: allemaal naast elkaar (groot)
     dashboard.innerHTML = allRobots.map(r=>{
       let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
       let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
       return formatRobotCard(r, isOffline, false, false);
     }).join('');
-    // Add events om focus te kiezen
     Array.from(document.querySelectorAll(".robot-card")).forEach(el => {
       el.onclick = ()=>{ focusRobotId = el.getAttribute("data-id"); updateDisplay();}
       el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId = el.getAttribute("data-id"); updateDisplay();}}
-    });
-  } else {
-    // Focus mode: 1 grote, 2 small opzij
-    let focusIx = allRobots.findIndex(r=>r.robot_id===focusRobotId);
-    let leftIx, rightIx;
-    if(allRobots.length===1) {
-      leftIx = rightIx = null;
-    } else if(allRobots.length===2) {
-      leftIx = focusIx === 0 ? 1 : 0;
-      rightIx = focusIx === 0 ? 1 : 0;
-    } else {
-      leftIx  = (focusIx+1)%3;
-      rightIx = (focusIx+2)%3;
-    }
-    dashboard.innerHTML = "";
-    // Links klein
-    if(leftIx!==null) {
-      let rL = allRobots[leftIx];
-      let lastPing = rL.last_seen ? new Date(rL.last_seen).getTime() : 0;
-      let isOffline = (!rL.last_seen) || ((now - lastPing)/1000 > 10);
-      dashboard.innerHTML += formatRobotCard(rL, isOffline, false, false);
-    } else {
-      dashboard.innerHTML += `<div style="width:220px;min-width:220px;"></div>`;
-    }
-    // Groot in midden
-    let r = allRobots[focusIx];
-    let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
-    let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
-    dashboard.innerHTML += formatRobotCard(r, isOffline, true, true);
-    // Rechts klein
-    if(rightIx!==null) {
-      let rR = allRobots[rightIx];
-      let lastPing = rR.last_seen ? new Date(rR.last_seen).getTime() : 0;
-      let isOffline = (!rR.last_seen) || ((now - lastPing)/1000 > 10);
-      dashboard.innerHTML += formatRobotCard(rR, isOffline, false, false);
-    } else {
-      dashboard.innerHTML += `<div style="width:220px;min-width:220px;"></div>`;
-    }
-    // Click event: klik op grote -> out of focus; klik op kleine -> andere focus
-    Array.from(document.querySelectorAll('.robot-card, .robot-card-big')).forEach(el => {
-      let thisId = el.getAttribute("data-id");
-      if(thisId === focusRobotId) {
-        el.onclick = ()=> { focusRobotId=null; updateDisplay(); }
-        el.onkeyup = e=>{ if(e.key==='Enter') { focusRobotId=null; updateDisplay();}}
-      } else {
-        el.onclick = ()=> { focusRobotId=thisId; updateDisplay(); }
-        el.onkeyup = e=>{ if(e.key==='Enter') { focusRobotId=thisId; updateDisplay();}}
-      }
     });
   }
 }
