@@ -139,10 +139,11 @@ async function fetchRobots() {
     const res = await fetch("/api/robots");
     let robots = await res.json();
     let now = Date.now();
+    // Sorteer robots op id, max 3 zichtbaar
     robots = robots.sort((a, b) => (a.robot_id||"").localeCompare(b.robot_id||""));
     robots = robots.slice(0,3);
     allRobots = robots;
-    // Als robots veranderen (id, volgorde, aantal): focus weer uit
+    // Reset focus als robots veranderen van id/volgorde of aantal
     let idString = robots.map(r=>r.robot_id).join(",");
     if (idString!==lastRobotIds) {
       focusRobotId = null;
@@ -159,48 +160,55 @@ function updateDisplay() {
     return;
   }
   if(!focusRobotId) {
+    // Standaard: alle robots naast elkaar, allemaal even groot
     dashboard.innerHTML = allRobots.map(r=>{
       let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
       let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
       return formatRobotCard(r, isOffline, false, false);
     }).join('');
-    // Add click events om focus te zetten
+    // Add events om focus te kiezen
     Array.from(document.querySelectorAll(".robot-card")).forEach(el => {
-      el.onclick = ()=>{ 
-        focusRobotId = el.getAttribute("data-id"); 
-        updateDisplay();
-      }
+      el.onclick = ()=>{ focusRobotId = el.getAttribute("data-id"); updateDisplay();}
       el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId = el.getAttribute("data-id"); updateDisplay();}}
     });
   } else {
-    // focus mode
+    // Focus mode: 1 grote, 2 small opzij
     let focusIx = allRobots.findIndex(r=>r.robot_id===focusRobotId);
-    let before = [];
-    let after = [];
-    allRobots.forEach((r,i)=>{
-      if(i < focusIx) before.push(r);
-      else if(i > focusIx) after.push(r);
-    });
-    dashboard.innerHTML = '';
-    // Links kleine cards
-    before.forEach(r=>{
-      let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
-      let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
-      dashboard.innerHTML += formatRobotCard(r, isOffline, false, false);
-    });
-    // grote card
+    let leftIx, rightIx;
+    if(allRobots.length===1) {
+      leftIx = rightIx = null;
+    } else if(allRobots.length===2) {
+      leftIx = focusIx === 0 ? 1 : 0;
+      rightIx = focusIx === 0 ? 1 : 0;
+    } else {
+      leftIx  = (focusIx+1)%3;
+      rightIx = (focusIx+2)%3;
+    }
+    dashboard.innerHTML = "";
+    // Links klein
+    if(leftIx!==null) {
+      let rL = allRobots[leftIx];
+      let lastPing = rL.last_seen ? new Date(rL.last_seen).getTime() : 0;
+      let isOffline = (!rL.last_seen) || ((now - lastPing)/1000 > 10);
+      dashboard.innerHTML += formatRobotCard(rL, isOffline, false, false);
+    } else {
+      dashboard.innerHTML += `<div style="width:220px;min-width:220px;"></div>`;
+    }
+    // Groot in midden
     let r = allRobots[focusIx];
     let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
     let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
     dashboard.innerHTML += formatRobotCard(r, isOffline, true, true);
-
-    // Rechts kleine cards
-    after.forEach(r=>{
-      let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
-      let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
-      dashboard.innerHTML += formatRobotCard(r, isOffline, false, false);
-    });
-    // Add click event: klik op grote kaart → terug, klik op kleine → focus die
+    // Rechts klein
+    if(rightIx!==null) {
+      let rR = allRobots[rightIx];
+      let lastPing = rR.last_seen ? new Date(rR.last_seen).getTime() : 0;
+      let isOffline = (!rR.last_seen) || ((now - lastPing)/1000 > 10);
+      dashboard.innerHTML += formatRobotCard(rR, isOffline, false, false);
+    } else {
+      dashboard.innerHTML += `<div style="width:220px;min-width:220px;"></div>`;
+    }
+    // Click event: klik op grote -> out of focus; klik op kleine -> andere focus
     Array.from(document.querySelectorAll('.robot-card, .robot-card-big')).forEach(el => {
       let thisId = el.getAttribute("data-id");
       if(thisId === focusRobotId) {
