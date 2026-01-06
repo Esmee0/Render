@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Relaybot dashboard</title>
+  <title>Relayrobot Dashboard - Focus Switch</title>
   <style>
 body {
   background: #181a1d;
@@ -12,149 +12,217 @@ body {
   display: flex; flex-direction: column; align-items: center;
 }
 h1 {
-  text-align: center;
-  margin: 2.5rem 0 2rem 0;
+  margin: 2.2rem 0 1.1rem 0;
   color: #3ed6fa;
-  font-size: 2.5rem;
+  font-size: 2.3rem;
   letter-spacing: 0.02em;
   font-weight: 700;
-  text-shadow: 0 6px 30px #000c;
+  text-shadow: 0 6px 30px #000a;
 }
-#robot-cars-container {
+#dashboard-flex {
   display: flex;
+  flex-direction: row;
   justify-content: center;
-  gap: 2rem;
-  flex-wrap: wrap;
-  margin-bottom: 3rem;
+  align-items: stretch;
+  gap: 1.7rem;
+  width: 100vw;
+  max-width: 1200px;
+  margin-top: 2.5rem;
 }
-.robot-car-box {
+.robot-card,
+.robot-card-big {
   background: #23252d;
-  border-radius: 1.7rem;
-  box-shadow: 0 6px 30px #0196df26;
-  padding: 2rem 3rem 2.2rem 3rem;
+  border-radius: 1.6rem;
+  box-shadow: 0 6px 30px #007abba1;
+  padding: 2rem 2.2rem 2.1rem 2.2rem;
   display: flex; flex-direction: column; align-items: center;
-  margin: 1.5rem 0 1rem 0;
-  min-width: 260px; max-width: 340px;
-  transition: transform 0.12s;
+  margin: 0;
+  transition: box-shadow 0.13s, transform 0.18s, filter 0.11s;
+  min-width: 230px; max-width: 340px; cursor: pointer; border: 2.5px solid transparent;
 }
-.robot-car-box:hover { transform: scale(1.03);}
-.tesla-car-svg {
-  width: 180px;
-  height: 86px;
-  margin-bottom: 1.16rem;
-  display: block;
-}
+.robot-card:hover, .robot-card-big:hover { border: 2.5px solid #2af8ff; filter:brightness(1.07);}
+.robot-card.selected { border: 2.5px solid #2af8ff; filter: brightness(1.14);}
+.robot-card-big { min-width: 370px; max-width: 410px; padding: 2.7rem 3rem 2.6rem 3rem; z-index:2; box-shadow: 0 14px 60px #0bfdfe41;}
+.tesla-car-svg { width: 160px; height: 76px; margin-bottom: 1.09rem;}
+.robot-card-big .tesla-car-svg { width: 220px; height: 106px; margin-bottom: 1.6rem;}
+.robot-title { color: #32e6ff; margin-bottom: 0.38em; font-weight: 600; font-size: 1.18em; text-align: center;}
+.robot-card-big .robot-title { font-size: 1.46em;}
 .status-box {
   text-align: center;
   margin: 0.8rem 0 0 0;
-  font-size: 1.2rem;
+  font-size: 1.18rem;
   font-weight: 500;
   letter-spacing: 0.01em;
-  min-height: 1.8em;
-}
+  min-height: 1.8em;}
 .status-box.obstacle { color: #ff4848; }
 .status-box.moving { color: #39ffb2; }
 .status-box.waiting { color: #ffd700; }
 .status-box.offline { color: #8f96a7; }
-#last-seen, #ping-count {
-  font-size: 0.95em;
+#last-seen, #ping-count,
+.robot-card-big #last-seen, .robot-card-big #ping-count {
+  font-size: 0.93em;
   margin: 0.35em 0;
   color: #95d5e7;
   text-align: center;
 }
-.robot-title {
-  color: #32e6ff;
-  margin-bottom: 0.3em;
-  font-weight: 600;
-  font-size: 1.26em;
-  text-align: center;
+.robot-card-big #last-seen, .robot-card-big #ping-count {
+  font-size: 1.08em;
+  color: #b1efff;
 }
-@media (max-width:900px) {
-  #robot-cars-container { flex-direction: column; align-items: center;}
-  .robot-car-box { min-width: 70vw; max-width: 99vw;}
+#focus-controls {
+  margin-top: 1.1em;
+  display: flex; flex-direction: row; gap: 1.8em; justify-content: center;
+}
+.control-btn {
+  background: linear-gradient(92deg,#2af8ff 20%,#48d6be 90%);
+  color: #0e2d3f; font-size: 1.09em; padding: 0.56em 1.5em; border: none;
+  border-radius: 0.88em; font-weight: 700; margin: 0 0.33em;
+  cursor: pointer; transition: filter 0.09s;
+  box-shadow: 0 2px 12px #11eae745;
+}
+.control-btn.off {
+  background: linear-gradient(92deg,#ff4848 30%,#ffd700 95%);
+  color: #251f00;
+}
+.control-btn:active { filter: brightness(0.91);}
+@media (max-width:950px) {
+  #dashboard-flex { flex-direction: column; align-items:center;}
+  .robot-card, .robot-card-big { min-width: 82vw; max-width: 99vw;}
 }
   </style>
 </head>
 <body>
-<h1>Relayrace dashboard</h1>
-<div id="robot-cars-container"></div>
+<h1>Relayrobot Dashboard</h1>
+<div id="dashboard-flex"></div>
 <script>
-// colors and status based on last_data text
+let allRobots = [];
+let focusRobotId = null;    // id van de grote robot in focus, of null voor alle 3 naast elkaar
+let lastRobotCount = 0;
+
 function getStatusProps(statusText, isOffline) {
-  if (isOffline) {
-      return {
-          fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline'
-      };
-  }
+  if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
   let L = (statusText||"").toLowerCase();
-  if (L.includes("obstacle")) return {
-      fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle'
-  };
-  if (L.includes("wait")) return {
-      fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting'
-  };
-  if (L.length>1) return {
-      fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving'
-  };
-  return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline'}
+  if (L.includes("obstacle")) return { fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle' };
+  if (L.includes("wait"))     return { fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting' };
+  if (L.length>1)             return { fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving' };
+  return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' }
 }
-// HTML for 1 robot
-function formatCarBox(r, isOffline=false) {
-  let stprops = getStatusProps(r.last_data, isOffline);
+function formatRobotCard(r, isOffline, isBig, selected) {
+  let st = getStatusProps(r.last_data, isOffline);
   return `
-  <div class="robot-car-box">
+  <div class="${isBig?'robot-card-big':'robot-card'}${selected?' selected':''}"
+       data-id="${r.robot_id}" tabindex="0" title="Klik voor meer info">
     <div class="robot-title">${r.robot_name || r.robot_id} <span style="font-size:0.8em; color:#bababa;">(${r.robot_id})</span></div>
-    <svg class="tesla-car-svg" viewBox="0 0 180 86" fill="none">
+    <svg class="tesla-car-svg" viewBox="0 0 180 86">
       <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
       <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
-      <rect x="30" y="42" width="120" height="19" rx="9" fill="${stprops.fill}"/>
-      <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${stprops.glass}" fill-opacity="0.72"/>
+      <rect x="30" y="42" width="120" height="19" rx="9" fill="${st.fill}"/>
+      <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${st.glass}" fill-opacity="0.72"/>
       <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
       <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
-      <ellipse cx="31" cy="53" rx="4" ry="2" fill="${stprops.lights}" />
-      <ellipse cx="148" cy="53" rx="4" ry="2" fill="${stprops.lights}" />
+      <ellipse cx="31" cy="53" rx="4" ry="2" fill="${st.lights}" />
+      <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
     </svg>
-    <div class="status-box ${stprops.status}">
-      ${isOffline ? "Offline" : (r.last_data ? r.last_data : "No status")}
+    <div class="status-box ${st.status}">
+      ${isOffline ? "Offline" : (r.last_data ? r.last_data : "Geen status")}
     </div>
-    <div id="last-seen">last ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
-    <div id="ping-count">Ping count: ${r.ping_count}</div>
-  </div>
-`;}
+    <div id="last-seen">Laatste ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
+    <div id="ping-count">Aantal pings: ${r.ping_count}</div>
+    ${isBig ? `
+    <div id="focus-controls">
+      <button class="control-btn" onclick="sendRobotCommand('${r.robot_id}', 'START');event.stopPropagation();">&#9654; Aan</button>
+      <button class="control-btn off" onclick="sendRobotCommand('${r.robot_id}', 'STOP');event.stopPropagation();">&#9632; Uit</button>
+    </div>` : ''}
+  </div>`;
+}
 async function fetchRobots() {
     const res = await fetch("/api/robots");
     let robots = await res.json();
     let now = Date.now();
-    // Sort robots by id (for fixed position: R1, R2, R3)
+    // Sorteer robots op id, max 3 zichtbaar
     robots = robots.sort((a, b) => (a.robot_id||"").localeCompare(b.robot_id||""));
-
-    // Build a map per id, and collect ids
-    let robotMap = {};
-    robots.forEach(r => { robotMap[r.robot_id] = r; });
-    let ids = robots.map(r => r.robot_id);
-
-    // Fill empty spots up to 3 (e.g., R1, R2, R3 as default)
-    let ids_set = new Set(ids);
-    while(ids.length < 3) {
-        let candidate = "R" + (ids.length + 1);
-        while(ids_set.has(candidate)) {
-            candidate = "R" + (Math.floor(Math.random()*300)+10);
-        }
-        ids.push(candidate);
-        ids_set.add(candidate);
+    robots = robots.slice(0,3);
+    allRobots = robots;
+    // Reset naar alle naast elkaar als robots erbij komen of verdwijnen
+    if (robots.length!==lastRobotCount) focusRobotId=null;
+    lastRobotCount = robots.length;
+    updateDisplay();
+}
+function updateDisplay() {
+  let now = Date.now();
+  let dashboard = document.getElementById("dashboard-flex");
+  if(!dashboard) return;
+  if(!allRobots.length) {
+    dashboard.innerHTML = `<div class="robot-card"><div class="robot-title">Geen robot online</div></div>`;
+    return;
+  }
+  // Niet in focus-mode (focusRobotId==null): 3 naast elkaar groot
+  if(!focusRobotId) {
+    dashboard.innerHTML = allRobots.map(r=>{
+      let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
+      let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
+      return formatRobotCard(r, isOffline, false, false);
+    }).join('');
+    // Click events: zet in focus
+    Array.from(document.querySelectorAll(".robot-card")).forEach(el => {
+      el.onclick = ()=>{ focusRobotId = el.getAttribute("data-id"); updateDisplay();}
+      el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId = el.getAttribute("data-id"); updateDisplay();}}
+    });
+  } else {
+    // In focus, show BIG center + small sides
+    let focusIx = allRobots.findIndex(r=>r.robot_id===focusRobotId);
+    let leftIx  = (focusIx===0) ? 1 : 0;
+    let rightIx = (focusIx===2) ? 1 : 2;
+    dashboard.innerHTML = "";
+    // Zet links
+    if (allRobots.length>1) {
+      let rL = allRobots[(focusIx+1)%allRobots.length];
+      let lastPing = rL.last_seen ? new Date(rL.last_seen).getTime() : 0;
+      let isOffline = (!rL.last_seen) || ((now - lastPing)/1000 > 10);
+      dashboard.innerHTML += formatRobotCard(rL, isOffline, false, false);
+    } else {
+      dashboard.innerHTML += `<div style="width:220px;min-width:220px;"></div>`;
     }
-    // Per id show robot live, or offline/placeholder if not active
-    let html = ids.slice(0,3).map(id => {
-        let r = robotMap[id] || {robot_id:id, robot_name:id, ping_count:0};
-        let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
-        let secondsSincePing = ((now - lastPing)/1000);
-        let isOffline = (!r.last_seen) || (secondsSincePing > 10);
-        return formatCarBox(r, isOffline);
-    }).join('\n');
-    document.getElementById('robot-cars-container').innerHTML = html;
+    // Groot in het midden
+    let r = allRobots[focusIx];
+    let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
+    let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
+    dashboard.innerHTML += formatRobotCard(r, isOffline, true, true);
+    // Zet rechts
+    if (allRobots.length>2) {
+      let rR = allRobots[(focusIx+2)%allRobots.length];
+      let lastPing = rR.last_seen ? new Date(rR.last_seen).getTime() : 0;
+      let isOffline = (!rR.last_seen) || ((now - lastPing)/1000 > 10);
+      dashboard.innerHTML += formatRobotCard(rR, isOffline, false, false);
+    } else {
+      dashboard.innerHTML += `<div style="width:220px;min-width:220px;"></div>`;
+    }
+    // Clicks op kleine -> focus verplaatsen; click op grote -> terug naar 3 naast elkaar
+    let cards = Array.from(document.querySelectorAll('.robot-card, .robot-card-big'));
+    cards.forEach(el => {
+      let thisId = el.getAttribute("data-id");
+      if(thisId === focusRobotId) {
+        // grote focus klik - terug naar naast elkaar
+        el.onclick = ()=> { focusRobotId=null; updateDisplay(); }
+        el.onkeyup = e=>{ if(e.key==='Enter') { focusRobotId=null; updateDisplay();}}
+      } else {
+        // small card klik = focus switchen
+        el.onclick = ()=> { focusRobotId=thisId; updateDisplay(); }
+        el.onkeyup = e=>{ if(e.key==='Enter') { focusRobotId=thisId; updateDisplay();}}
+      }
+    });
+  }
+}
+function sendRobotCommand(robotId, cmd) {
+  fetch('/api/command', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ robot_id: robotId, command: cmd })
+    }).then(r => r.json())
+     .then(obj => alert('Commando verstuurd: ' + obj.status));
 }
 fetchRobots();
-setInterval(fetchRobots, 1500);
+setInterval(fetchRobots, 1400);
 </script>
 </body>
 </html>
