@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Relayrobot Dashboard - Altijd 3 Auto's</title>
+  <title>Relayrobot Dashboard - Linker Focus</title>
   <style>
 body {
   background: #181a1d;
@@ -22,9 +22,9 @@ h1 {
 #dashboard-flex {
   display: flex;
   flex-direction: row;
+  align-items: flex-start;
   justify-content: center;
-  align-items: stretch;
-  gap: 1.7rem;
+  gap: 2.5rem;
   width: 100vw;
   max-width: 1200px;
   margin-top: 2.5rem;
@@ -34,15 +34,21 @@ h1 {
   background: #23252d;
   border-radius: 1.6rem;
   box-shadow: 0 6px 30px #007abba1;
-  padding: 2rem 2.2rem 2.1rem 2.2rem;
   display: flex; flex-direction: column; align-items: center;
   margin: 0;
   transition: box-shadow 0.13s, transform 0.18s, filter 0.11s;
-  min-width: 230px; max-width: 340px; cursor: pointer; border: 2.5px solid transparent;
+  border: 2.5px solid transparent;
+  cursor: pointer;
+}
+.robot-card {
+  min-width: 230px; max-width: 340px; padding: 2rem 2.2rem 2.1rem 2.2rem;
+}
+.robot-card-big { 
+  min-width: 370px; max-width: 440px; padding: 2.7rem 3rem 2.6rem 3rem; 
+  z-index:2; box-shadow: 0 14px 60px #0bfdfe41;
 }
 .robot-card:hover, .robot-card-big:hover { border: 2.5px solid #2af8ff; filter:brightness(1.07);}
 .robot-card.selected { border: 2.5px solid #2af8ff; filter: brightness(1.14);}
-.robot-card-big { min-width: 370px; max-width: 410px; padding: 2.7rem 3rem 2.6rem 3rem; z-index:2; box-shadow: 0 14px 60px #0bfdfe41;}
 .tesla-car-svg { width: 160px; height: 76px; margin-bottom: 1.09rem;}
 .robot-card-big .tesla-car-svg { width: 220px; height: 106px; margin-bottom: 1.6rem;}
 .robot-title { color: #32e6ff; margin-bottom: 0.38em; font-weight: 600; font-size: 1.18em; text-align: center;}
@@ -50,7 +56,7 @@ h1 {
 .status-box {
   text-align: center;
   margin: 0.8rem 0 0 0;
-  font-size: 1.18rem;
+  font-size: 1.09rem;
   font-weight: 500;
   letter-spacing: 0.01em;
   min-height: 1.8em;}
@@ -61,7 +67,7 @@ h1 {
 #last-seen, #ping-count,
 .robot-card-big #last-seen, .robot-card-big #ping-count {
   font-size: 0.93em;
-  margin: 0.35em 0;
+  margin: 0.28em 0;
   color: #95d5e7;
   text-align: center;
 }
@@ -85,9 +91,16 @@ h1 {
   color: #251f00;
 }
 .control-btn:active { filter: brightness(0.91);}
-@media (max-width:950px) {
-  #dashboard-flex { flex-direction: column; align-items:center;}
-  .robot-card, .robot-card-big { min-width: 82vw; max-width: 99vw;}
+#sidebar-right {
+  display: flex;
+  flex-direction: column;
+  gap: 1.7rem;
+  align-items: center;
+}
+@media (max-width: 900px) {
+  #dashboard-flex { flex-direction: column; align-items:center; gap: 2rem;}
+  #sidebar-right { flex-direction: row; gap: 1.3rem;}
+  .robot-card, .robot-card-big { min-width: 80vw; max-width: 99vw;}
 }
   </style>
 </head>
@@ -101,7 +114,6 @@ let allRobots = [];
 let robotMap = {};
 let focusRobotId = null;
 
-// Helper: statuskleuren
 function getStatusProps(statusText, isOffline) {
   if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
   let L = (statusText||"").toLowerCase();
@@ -144,7 +156,6 @@ async function fetchRobots() {
     let now = Date.now();
     robotMap = {};
     robots.forEach(r=>{ robotMap[r.robot_id]=r;});
-    // Vul alle plekken met data of placeholders
     allRobots = robotIdList.map(id => {
       let r = robotMap[id] || {robot_id:id, robot_name:id, ping_count:0, last_seen:null, last_data:""};
       return r;
@@ -159,37 +170,29 @@ function updateDisplay() {
     dashboard.innerHTML = `<div class="robot-card"><div class="robot-title">Geen robot online</div></div>`;
     return;
   }
-  // Focus view
   if(focusRobotId){
     let bigIx = allRobots.findIndex(r=>r.robot_id===focusRobotId);
-    // Bouw array: kleine voor, grote in midden, kleine na
-    let cards = [];
-    // links klein
-    for(let i=0;i<allRobots.length;i++){
-      if(i!==bigIx) cards.push(i);
-    }
-    // links en rechts verdelen
-    let leftIx = cards[0], rightIx = cards[1];
+    // alle indices behalve de gefocusde
+    let miniIx = [];
+    for(let i=0; i<allRobots.length; ++i) if(i !== bigIx) miniIx.push(i);
     dashboard.innerHTML = '';
-    if(leftIx!==undefined) {
-      let rL = allRobots[leftIx];
-      let lastPing = rL.last_seen ? new Date(rL.last_seen).getTime() : 0;
-      let isOffline = (!rL.last_seen) || ((now - lastPing)/1000 > 10);
-      dashboard.innerHTML += formatRobotCard(rL, isOffline, false, false);
-    }
-    // groot centraal
+    // links grote kaart
     let r = allRobots[bigIx];
     let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
     let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
     dashboard.innerHTML += formatRobotCard(r, isOffline, true, true);
-    if(rightIx!==undefined){
-      let rR = allRobots[rightIx];
-      let lastPing = rR.last_seen ? new Date(rR.last_seen).getTime() : 0;
-      let isOffline = (!rR.last_seen) || ((now - lastPing)/1000 > 10);
-      dashboard.innerHTML += formatRobotCard(rR, isOffline, false, false);
-    }
+    // rechts: 2 kleine onder elkaar
+    dashboard.innerHTML += `<div id="sidebar-right"></div>`;
+    let sidebar = document.getElementById("sidebar-right");
+    miniIx.forEach(ix=>{
+      let r = allRobots[ix];
+      let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
+      let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
+      sidebar.innerHTML += formatRobotCard(r, isOffline, false, false);
+    });
     // Add eventlisteners — grote: klik = uit focus, kleine: klik = focus die
-    Array.from(document.querySelectorAll('.robot-card, .robot-card-big')).forEach(el => {
+    const allCards = document.querySelectorAll('.robot-card, .robot-card-big');
+    allCards.forEach(el => {
       let id = el.getAttribute("data-id");
       if(id === focusRobotId) {
         el.onclick = ()=> { focusRobotId=null; updateDisplay();}
@@ -199,13 +202,14 @@ function updateDisplay() {
         el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId=id; updateDisplay();}}
       }
     });
-  }else{
+  } else {
     // Normaal: allemaal naast elkaar (groot)
     dashboard.innerHTML = allRobots.map(r=>{
       let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
       let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
       return formatRobotCard(r, isOffline, false, false);
     }).join('');
+    // Click events om focus te zetten
     Array.from(document.querySelectorAll(".robot-card")).forEach(el => {
       el.onclick = ()=>{ focusRobotId = el.getAttribute("data-id"); updateDisplay();}
       el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId = el.getAttribute("data-id"); updateDisplay();}}
