@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Relayrobot Dashboard - Linker Focus</title>
+  <title>Relayrobot Dashboard</title> 
   <style>
 body {
   background: #181a1d;
@@ -108,8 +108,8 @@ h1 {
 <h1>Relayrobot Dashboard</h1>
 <div id="dashboard-flex"></div>
 <script>
-// === Altijd 3 plekken: "R1", "R2", "R3" ===
-const robotIdList = ["R1", "R2", "R3"];
+
+const robotIdList = ["Pink Panther", "James Bond", "BDP"];
 let allRobots = [];
 let robotMap = {};
 let focusRobotId = null;
@@ -126,7 +126,7 @@ function formatRobotCard(r, isOffline, isBig, selected) {
   let st = getStatusProps(r.last_data, isOffline);
   return `
   <div class="${isBig?'robot-card-big':'robot-card'}${selected?' selected':''}"
-       data-id="${r.robot_id}" tabindex="0" title="Klik voor meer info">
+       data-id="${r.robot_id}" tabindex="0" title="Click me">
     <div class="robot-title">${r.robot_name || r.robot_id} <span style="font-size:0.8em; color:#bababa;">(${r.robot_id})</span></div>
     <svg class="tesla-car-svg" viewBox="0 0 180 86">
       <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
@@ -139,14 +139,14 @@ function formatRobotCard(r, isOffline, isBig, selected) {
       <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
     </svg>
     <div class="status-box ${st.status}">
-      ${isOffline ? "Offline" : (r.last_data ? r.last_data : "Geen status")}
+      ${isOffline ? "Offline" : (r.last_data ? r.last_data : "No data")}
     </div>
-    <div id="last-seen">Laatste ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
-    <div id="ping-count">Aantal pings: ${r.ping_count||0}</div>
+    <div id="last-seen">Last ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
+    <div id="ping-count">Ping count: ${r.ping_count||0}</div>
     ${isBig ? `
     <div id="focus-controls">
-      <button class="control-btn" onclick="sendRobotCommand('${r.robot_id}', 'START');event.stopPropagation();">&#9654; Aan</button>
-      <button class="control-btn off" onclick="sendRobotCommand('${r.robot_id}', 'STOP');event.stopPropagation();">&#9632; Uit</button>
+      <button class="control-btn" onclick="sendRobotCommand('${r.robot_id}', 'START');event.stopPropagation();">&#9654; On</button>
+      <button class="control-btn off" onclick="sendRobotCommand('${r.robot_id}', 'STOP');event.stopPropagation();">&#9632; Off</button>
     </div>` : ''}
   </div>`;
 }
@@ -172,16 +172,13 @@ function updateDisplay() {
   }
   if(focusRobotId){
     let bigIx = allRobots.findIndex(r=>r.robot_id===focusRobotId);
-    // alle indices behalve de gefocusde
     let miniIx = [];
     for(let i=0; i<allRobots.length; ++i) if(i !== bigIx) miniIx.push(i);
     dashboard.innerHTML = '';
-    // links grote kaart
     let r = allRobots[bigIx];
     let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
     let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
     dashboard.innerHTML += formatRobotCard(r, isOffline, true, true);
-    // rechts: 2 kleine onder elkaar
     dashboard.innerHTML += `<div id="sidebar-right"></div>`;
     let sidebar = document.getElementById("sidebar-right");
     miniIx.forEach(ix=>{
@@ -190,7 +187,7 @@ function updateDisplay() {
       let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
       sidebar.innerHTML += formatRobotCard(r, isOffline, false, false);
     });
-    // Add eventlisteners — grote: klik = uit focus, kleine: klik = focus die
+    
     const allCards = document.querySelectorAll('.robot-card, .robot-card-big');
     allCards.forEach(el => {
       let id = el.getAttribute("data-id");
@@ -203,13 +200,13 @@ function updateDisplay() {
       }
     });
   } else {
-    // Normaal: allemaal naast elkaar (groot)
+    
     dashboard.innerHTML = allRobots.map(r=>{
       let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
       let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
       return formatRobotCard(r, isOffline, false, false);
     }).join('');
-    // Click events om focus te zetten
+    
     Array.from(document.querySelectorAll(".robot-card")).forEach(el => {
       el.onclick = ()=>{ focusRobotId = el.getAttribute("data-id"); updateDisplay();}
       el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId = el.getAttribute("data-id"); updateDisplay();}}
