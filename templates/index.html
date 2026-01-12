@@ -64,6 +64,7 @@ h1 {
 .status-box.moving { color: #39ffb2; }
 .status-box.waiting { color: #ffd700; }
 .status-box.offline { color: #8f96a7; }
+
 #last-seen, #ping-count,
 .robot-card-big #last-seen, .robot-card-big #ping-count {
   font-size: 0.93em;
@@ -91,12 +92,20 @@ h1 {
   color: #251f00;
 }
 .control-btn:active { filter: brightness(0.91);}
+
 #sidebar-right {
   display: flex;
   flex-direction: column;
   gap: 1.7rem;
   align-items: center;
 }
+
+#top-info {
+  margin-top: 0.2rem;
+  color: #a7b2c3;
+  font-size: 0.95rem;
+}
+
 @media (max-width: 900px) {
   #dashboard-flex { flex-direction: column; align-items:center; gap: 2rem;}
   #sidebar-right { flex-direction: row; gap: 1.3rem;}
@@ -106,28 +115,34 @@ h1 {
 </head>
 <body>
 <h1>Relayrobot Dashboard</h1>
+<div id="top-info">Connecting…</div>
 <div id="dashboard-flex"></div>
-<script>
 
+<script>
 const robotIdList = ["Pink Panther", "James Bond", "BDP"];
 let allRobots = [];
 let robotMap = {};
 let focusRobotId = null;
+let lastUpdateMs = 0;
 
 function getStatusProps(statusText, isOffline) {
   if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
   let L = (statusText||"").toLowerCase();
-  if (L.includes("obstacle")) return { fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle' };
-  if (L.includes("wait"))     return { fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting' };
-  if (L.length>1)             return { fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving' };
-  return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' }
+  if (L.includes("obstacle") || L.includes("object")) return { fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle' };
+  if (L.includes("wait")) return { fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting' };
+  if (L.length > 1) return { fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving' };
+  return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
 }
+
 function formatRobotCard(r, isOffline, isBig, selected) {
   let st = getStatusProps(r.last_data, isOffline);
   return `
   <div class="${isBig?'robot-card-big':'robot-card'}${selected?' selected':''}"
        data-id="${r.robot_id}" tabindex="0" title="Click me">
-    <div class="robot-title">${r.robot_name || r.robot_id} <span style="font-size:0.8em; color:#bababa;">(${r.robot_id})</span></div>
+    <div class="robot-title">${r.robot_name || r.robot_id}
+      <span style="font-size:0.8em; color:#bababa;">(${r.robot_id})</span>
+    </div>
+
     <svg class="tesla-car-svg" viewBox="0 0 180 86">
       <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
       <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
@@ -138,11 +153,14 @@ function formatRobotCard(r, isOffline, isBig, selected) {
       <ellipse cx="31" cy="53" rx="4" ry="2" fill="${st.lights}" />
       <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
     </svg>
+
     <div class="status-box ${st.status}">
       ${isOffline ? "Offline" : (r.last_data ? r.last_data : "No data")}
     </div>
-    <div id="last-seen">Last ping: ${r.last_seen? new Date(r.last_seen).toLocaleString() : '-'}</div>
-    <div id="ping-count">Ping count: ${r.ping_count||0}</div>
+
+    <div id="last-seen">Last ping: ${r.last_seen ? new Date(r.last_seen).toLocaleString() : '-'}</div>
+    <div id="ping-count">Ping count: ${r.ping_count || 0}</div>
+
     ${isBig ? `
     <div id="focus-controls">
       <button class="control-btn" onclick="sendRobotCommand('${r.robot_id}', 'START');event.stopPropagation();">&#9654; On</button>
@@ -150,79 +168,148 @@ function formatRobotCard(r, isOffline, isBig, selected) {
     </div>` : ''}
   </div>`;
 }
-async function fetchRobots() {
-    const res = await fetch("/api/robots");
-    let robots = await res.json();
-    let now = Date.now();
-    robotMap = {};
-    robots.forEach(r=>{ robotMap[r.robot_id]=r;});
-    allRobots = robotIdList.map(id => {
-      let r = robotMap[id] || {robot_id:id, robot_name:id, ping_count:0, last_seen:null, last_data:""};
-      return r;
+
+function normalizeRobotsPayload(payload) {
+  // We EXPECT an array of objects:
+  //   [{robot_id, robot_name, ping_count, last_seen, last_data}, ...]
+  // But if backend ever returns an object map, convert it safely.
+
+  if (Array.isArray(payload)) return payload;
+
+  // If payload is like {"R1":"...", "R2":"..."} or {"Pink Panther": {...}}
+  if (payload && typeof payload === "object") {
+    // Case: {"R1":"No data","R2":"No data"...}
+    const keys = Object.keys(payload);
+    if (keys.length && typeof payload[keys[0]] === "string") {
+      // Map internal IDs to UI names (same as server side mapping)
+      const idMap = { "R1": "Pink Panther", "R2": "James Bond", "R3": "BDP" };
+      return Object.keys(idMap).map(rid => ({
+        robot_id: idMap[rid],
+        robot_name: idMap[rid],
+        ping_count: 0,
+        last_seen: null,
+        last_data: payload[rid] || "No data"
+      }));
+    }
+
+    // Generic object → try to pull out entries
+    return keys.map(k => {
+      const v = payload[k];
+      if (v && typeof v === "object") {
+        return {
+          robot_id: v.robot_id || k,
+          robot_name: v.robot_name || k,
+          ping_count: v.ping_count || 0,
+          last_seen: v.last_seen || null,
+          last_data: v.last_data || ""
+        };
+      }
+      return { robot_id: k, robot_name: k, ping_count: 0, last_seen: null, last_data: String(v) };
     });
-    updateDisplay();
+  }
+
+  return [];
 }
+
+async function fetchRobots() {
+  const topInfo = document.getElementById("top-info");
+  try {
+    const res = await fetch("/api/robots", { cache: "no-store" });
+    const payload = await res.json();
+    const robotsArr = normalizeRobotsPayload(payload);
+
+    robotMap = {};
+    robotsArr.forEach(r => { robotMap[r.robot_id] = r; });
+
+    // Keep fixed order + fill missing entries
+    allRobots = robotIdList.map(id => {
+      return robotMap[id] || { robot_id: id, robot_name: id, ping_count: 0, last_seen: null, last_data: "" };
+    });
+
+    lastUpdateMs = Date.now();
+    if (topInfo) topInfo.textContent = `Live • last update ${new Date(lastUpdateMs).toLocaleTimeString()}`;
+    updateDisplay();
+  } catch (e) {
+    if (topInfo) topInfo.textContent = `Disconnected • retrying…`;
+    // Keep displaying last known state
+  }
+}
+
 function updateDisplay() {
   let now = Date.now();
   let dashboard = document.getElementById("dashboard-flex");
-  if(!dashboard) return;
-  if(!allRobots.length) {
+  if (!dashboard) return;
+
+  if (!allRobots.length) {
     dashboard.innerHTML = `<div class="robot-card"><div class="robot-title">Geen robot online</div></div>`;
     return;
   }
-  if(focusRobotId){
-    let bigIx = allRobots.findIndex(r=>r.robot_id===focusRobotId);
+
+  if (focusRobotId) {
+    let bigIx = allRobots.findIndex(r => r.robot_id === focusRobotId);
+    if (bigIx < 0) { focusRobotId = null; return; }
+
     let miniIx = [];
-    for(let i=0; i<allRobots.length; ++i) if(i !== bigIx) miniIx.push(i);
+    for (let i = 0; i < allRobots.length; ++i) if (i !== bigIx) miniIx.push(i);
+
     dashboard.innerHTML = '';
     let r = allRobots[bigIx];
+
     let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
-    let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
+    let isOffline = (!r.last_seen) || ((now - lastPing) / 1000 > 10);
+
     dashboard.innerHTML += formatRobotCard(r, isOffline, true, true);
     dashboard.innerHTML += `<div id="sidebar-right"></div>`;
+
     let sidebar = document.getElementById("sidebar-right");
-    miniIx.forEach(ix=>{
-      let r = allRobots[ix];
-      let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
-      let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
-      sidebar.innerHTML += formatRobotCard(r, isOffline, false, false);
+    miniIx.forEach(ix => {
+      let rr = allRobots[ix];
+      let lp = rr.last_seen ? new Date(rr.last_seen).getTime() : 0;
+      let off = (!rr.last_seen) || ((now - lp) / 1000 > 10);
+      sidebar.innerHTML += formatRobotCard(rr, off, false, false);
     });
-    
+
     const allCards = document.querySelectorAll('.robot-card, .robot-card-big');
     allCards.forEach(el => {
       let id = el.getAttribute("data-id");
-      if(id === focusRobotId) {
-        el.onclick = ()=> { focusRobotId=null; updateDisplay();}
-        el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId=null; updateDisplay();}}
+      if (id === focusRobotId) {
+        el.onclick = () => { focusRobotId = null; updateDisplay(); };
+        el.onkeyup = (e) => { if (e.key === 'Enter') { focusRobotId = null; updateDisplay(); } };
       } else {
-        el.onclick = ()=> { focusRobotId=id; updateDisplay();}
-        el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId=id; updateDisplay();}}
+        el.onclick = () => { focusRobotId = id; updateDisplay(); };
+        el.onkeyup = (e) => { if (e.key === 'Enter') { focusRobotId = id; updateDisplay(); } };
       }
     });
+
   } else {
-    
-    dashboard.innerHTML = allRobots.map(r=>{
+    dashboard.innerHTML = allRobots.map(r => {
       let lastPing = r.last_seen ? new Date(r.last_seen).getTime() : 0;
-      let isOffline = (!r.last_seen) || ((now - lastPing)/1000 > 10);
+      let isOffline = (!r.last_seen) || ((now - lastPing) / 1000 > 10);
       return formatRobotCard(r, isOffline, false, false);
     }).join('');
-    
+
     Array.from(document.querySelectorAll(".robot-card")).forEach(el => {
-      el.onclick = ()=>{ focusRobotId = el.getAttribute("data-id"); updateDisplay();}
-      el.onkeyup = (e)=>{ if(e.key==='Enter') { focusRobotId = el.getAttribute("data-id"); updateDisplay();}}
+      el.onclick = () => { focusRobotId = el.getAttribute("data-id"); updateDisplay(); };
+      el.onkeyup = (e) => { if (e.key === 'Enter') { focusRobotId = el.getAttribute("data-id"); updateDisplay(); } };
     });
   }
 }
+
 function sendRobotCommand(robotId, cmd) {
   fetch('/api/command', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ robot_id: robotId, command: cmd })
-    }).then(r => r.json())
-     .then(obj => alert('Commando verstuurd: ' + obj.status));
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ robot_id: robotId, command: cmd })
+  })
+  .then(r => r.json())
+  .then(obj => alert('Commando verstuurd: ' + obj.status))
+  .catch(() => alert('Command failed'));
 }
+
+// Start live updates immediately (no manual refresh needed)
 fetchRobots();
-setInterval(fetchRobots, 1400);
+setInterval(fetchRobots, 1000);
 </script>
+
 </body>
 </html>
