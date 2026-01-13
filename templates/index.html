@@ -11,376 +11,370 @@
   <div id="top-info">Connecting…</div>
 
   <div id="controls">
-    <button id="autoBtn" class="btn btn-auto">▶ Auto Race: OFF</button>
+    <div id="relayState" class="pill">Relay: idle</div>
+    <button id="relayBtn" class="btn btn-auto">▶ Relay Mode: OFF</button>
     <button id="stopAllBtn" class="btn btn-stop">■ Stop All</button>
-    <div id="autoState" class="pill">Auto: idle</div>
   </div>
 
   <div id="dashboard-flex"></div>
 
 <script>
-  // --- Slots (UI cards) ---
-  const slots = [
-    { key: "Pink Panther", aliases: ["Pink Panther","R1","Robot 1","1"] },
-    { key: "James Bond",   aliases: ["James Bond","R2","Robot 2","2"] },
-    { key: "BDP",          aliases: ["BDP","R3","Robot 3","3"] }
-  ];
+/*
+  NEW LOGIC (relay):
+  - Pink Panther starts on its own (we do NOT send it a start).
+  - When Pink Panther finishes -> send START_R2 to James Bond.
+  - When James Bond finishes -> send START_R3 to BDP.
+  - Unique start signals: START_R2, START_R3
+  - Manual buttons still work: send START to whichever robot card you click.
+*/
 
-  // --- Auto sequence order ---
-  const sequence = ["Pink Panther", "James Bond", "BDP"];
+const slots = [
+  { key: "Pink Panther", aliases: ["Pink Panther","R1","Robot 1","1"] },
+  { key: "James Bond",   aliases: ["James Bond","R2","Robot 2","2"] },
+  { key: "BDP",          aliases: ["BDP","R3","Robot 3","3"] }
+];
 
-  let allRobots = [];
-  let focusRobotKey = null;
+// Relay sequence (Pink Panther -> James Bond -> BDP)
+const RELAY = [
+  { who: "Pink Panther", finishKeyword: "race finished", next: { who: "James Bond", cmd: "START_R2" } },
+  { who: "James Bond",   finishKeyword: "race finished", next: { who: "BDP",        cmd: "START_R3" } },
+  { who: "BDP",          finishKeyword: "race finished", next: null }
+];
 
-  // Auto race state
-  let autoEnabled = false;
-  let autoIndex = 0;                 // which robot in sequence we are waiting/running
-  let lastAutoSentAt = 0;            // spam guard
-  const AUTO_COOLDOWN_MS = 2500;     // don't resend START too often
-  const FINISH_KEYWORD = "race finished"; // must appear in last_data to mark finished
+let allRobots = [];
+let focusRobotKey = null;
 
-  // Keep last-known values so a "Turning Left" message doesn't erase speed/distance
-  const cache = {
-    "Pink Panther": { speed: "-", distance: "-", action: "No data", raw: "", seen: null },
-    "James Bond":   { speed: "-", distance: "-", action: "No data", raw: "", seen: null },
-    "BDP":          { speed: "-", distance: "-", action: "No data", raw: "", seen: null }
-  };
+// Relay state
+let relayEnabled = false;
+let relayStep = 0;                 // 0 watching Panther, 1 watching Bond, 2 watching BDP
+let lastRelaySentAt = 0;
+const RELAY_COOLDOWN_MS = 2500;
 
-  function safeDate(x) {
-    if (!x) return null;
-    let d = new Date(x);
+// cache so speed/distance don't disappear
+const cache = {
+  "Pink Panther": { speed: "-", distance: "-", action: "No data", raw: "", seen: null },
+  "James Bond":   { speed: "-", distance: "-", action: "No data", raw: "", seen: null },
+  "BDP":          { speed: "-", distance: "-", action: "No data", raw: "", seen: null }
+};
+
+function safeDate(x) {
+  if (!x) return null;
+  let d = new Date(x);
+  if (!isNaN(d.getTime())) return d;
+  if (typeof x === "string" && x.includes(" ") && !x.includes("T")) {
+    d = new Date(x.replace(" ", "T"));
     if (!isNaN(d.getTime())) return d;
-    if (typeof x === "string" && x.includes(" ") && !x.includes("T")) {
-      d = new Date(x.replace(" ", "T"));
-      if (!isNaN(d.getTime())) return d;
-    }
-    const n = Number(x);
-    if (!Number.isNaN(n) && n > 1000000000) {
-      const d2 = new Date(n * (n < 2000000000 ? 1000 : 1));
-      if (!isNaN(d2.getTime())) return d2;
-    }
-    return null;
   }
+  const n = Number(x);
+  if (!Number.isNaN(n) && n > 1000000000) {
+    const d2 = new Date(n * (n < 2000000000 ? 1000 : 1));
+    if (!isNaN(d2.getTime())) return d2;
+  }
+  return null;
+}
 
-  function normalizePayload(payload) {
-    if (Array.isArray(payload)) return payload;
+function normalizePayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === "object") {
+    if (Array.isArray(payload.robots)) return payload.robots;
+    if (Array.isArray(payload.data)) return payload.data;
 
-    if (payload && typeof payload === "object") {
-      if (Array.isArray(payload.robots)) return payload.robots;
-      if (Array.isArray(payload.data)) return payload.data;
+    const keys = Object.keys(payload);
+    if (!keys.length) return [];
 
-      const keys = Object.keys(payload);
-      if (!keys.length) return [];
+    if (typeof payload[keys[0]] === "string") {
+      return keys.map(k => ({
+        robot_id: k, robot_name: k, ping_count: 0, last_seen: null, last_data: payload[k] || ""
+      }));
+    }
 
-      if (typeof payload[keys[0]] === "string") {
-        return keys.map(k => ({
-          robot_id: k,
-          robot_name: k,
-          ping_count: 0,
-          last_seen: null,
-          last_data: payload[k] || ""
-        }));
+    return keys.map(k => {
+      const v = payload[k];
+      if (v && typeof v === "object") {
+        return {
+          robot_id: v.robot_id || k,
+          robot_name: v.robot_name || k,
+          ping_count: v.ping_count || 0,
+          last_seen: v.last_seen || null,
+          last_data: v.last_data || v.message || ""
+        };
       }
-
-      return keys.map(k => {
-        const v = payload[k];
-        if (v && typeof v === "object") {
-          return {
-            robot_id: v.robot_id || k,
-            robot_name: v.robot_name || k,
-            ping_count: v.ping_count || 0,
-            last_seen: v.last_seen || null,
-            last_data: v.last_data || v.message || ""
-          };
-        }
-        return { robot_id: k, robot_name: k, ping_count: 0, last_seen: null, last_data: String(v) };
-      });
-    }
-    return [];
+      return { robot_id: k, robot_name: k, ping_count: 0, last_seen: null, last_data: String(v) };
+    });
   }
+  return [];
+}
 
-  function pickRobotForSlot(slot, robots) {
-    const aliases = slot.aliases.map(a => String(a).toLowerCase());
-    const best =
-      robots.find(r => aliases.includes(String(r.robot_id || "").toLowerCase())) ||
-      robots.find(r => aliases.includes(String(r.robot_name || "").toLowerCase())) ||
-      robots.find(r => {
-        const msg = String(r.last_data || "").toLowerCase();
-        return aliases.some(a => msg.startsWith(a.toLowerCase() + " ") || msg.startsWith(a.toLowerCase() + ":"));
-      });
+function pickRobotForSlot(slot, robots) {
+  const aliases = slot.aliases.map(a => String(a).toLowerCase());
+  const best =
+    robots.find(r => aliases.includes(String(r.robot_id || "").toLowerCase())) ||
+    robots.find(r => aliases.includes(String(r.robot_name || "").toLowerCase())) ||
+    robots.find(r => {
+      const msg = String(r.last_data || "").toLowerCase();
+      return aliases.some(a => msg.startsWith(a + " ") || msg.startsWith(a + ":"));
+    });
 
-    if (best) return best;
+  if (best) return best;
 
-    return {
-      robot_id: slot.aliases[0],
-      robot_name: slot.key,
-      ping_count: 0,
-      last_seen: null,
-      last_data: ""
-    };
-  }
+  return {
+    robot_id: slot.aliases[0],
+    robot_name: slot.key,
+    ping_count: 0,
+    last_seen: null,
+    last_data: ""
+  };
+}
 
-  function parseTelemetry(lastData) {
-    const text = (lastData || "").toString().trim();
-    const L = text.toLowerCase();
+function parseTelemetry(lastData) {
+  const text = (lastData || "").toString().trim();
+  const L = text.toLowerCase();
 
-    let action = "";
-    if (L.includes("race finished")) action = "Race Finished";
-    else if (L.includes("dropping cone")) action = "Dropping Cone";
-    else if (L.includes("started the race")) action = "Started Race";
-    else if (L.includes("waiting for start")) action = "Waiting for start";
-    else if (L.includes("turning left")) action = "Turning Left";
-    else if (L.includes("turning right")) action = "Turning Right";
-    else if (L.includes("lost the line")) action = "Searching (Lost line)";
-    else if (L.includes("object found") || L.includes("obstacle")) action = "Obstacle Detected";
-    else if (L.includes("robot online")) action = "Online";
-    else if (L.includes("motor speed")) action = "Moving";
-    else if (text.length) action = text;
-    else action = "No data";
+  let action = "";
+  if (L.includes("race finished")) action = "Race Finished";
+  else if (L.includes("dropping cone")) action = "Dropping Cone";
+  else if (L.includes("started the race")) action = "Started Race";
+  else if (L.includes("waiting for start")) action = "Waiting for start";
+  else if (L.includes("turning left")) action = "Turning Left";
+  else if (L.includes("turning right")) action = "Turning Right";
+  else if (L.includes("lost the line")) action = "Searching (Lost line)";
+  else if (L.includes("object found") || L.includes("obstacle")) action = "Obstacle Detected";
+  else if (L.includes("robot online")) action = "Online";
+  else if (L.includes("motor speed")) action = "Moving";
+  else if (text.length) action = text;
+  else action = "No data";
 
-    let speed = null;
-    const m = text.match(/motor\s*speed\s*:\s*([0-9.]+)/i);
-    if (m) speed = m[1];
+  let speed = null;
+  const m = text.match(/motor\s*speed\s*:\s*([0-9.]+)/i);
+  if (m) speed = m[1];
 
-    let distance = null;
-    const d = text.match(/distance\s*:\s*([0-9.]+)/i);
-    if (d) distance = d[1];
+  let distance = null;
+  const d = text.match(/distance\s*:\s*([0-9.]+)/i);
+  if (d) distance = d[1];
 
-    return { action, speed, distance, raw: text };
-  }
+  return { action, speed, distance, raw: text };
+}
 
-  function isOfflineRobot(r) {
-    const msg = String(r.last_data || "").trim();
-    if (msg && msg.toLowerCase() !== "no data") return false;
+function isOfflineRobot(r) {
+  const msg = String(r.last_data || "").trim();
+  if (msg && msg.toLowerCase() !== "no data") return false;
+  const d = safeDate(r.last_seen);
+  if (d) return (Date.now() - d.getTime()) > 10000;
+  return true;
+}
 
-    const d = safeDate(r.last_seen);
-    if (d) return (Date.now() - d.getTime()) > 10000;
-    return true;
-  }
+function getStatusProps(actionText, isOffline) {
+  if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
+  const L = (actionText||"").toLowerCase();
+  if (L.includes("finished")) return { fill:'#c7a6ff', glass:'#fff', lights:'#fffbe0', status:'finished' };
+  if (L.includes("obstacle")) return { fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle' };
+  if (L.includes("wait")) return { fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting' };
+  return { fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving' };
+}
 
-  function getStatusProps(actionText, isOffline) {
-    if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
-    const L = (actionText||"").toLowerCase();
-    if (L.includes("finished")) return { fill:'#c7a6ff', glass:'#fff', lights:'#fffbe0', status:'finished' };
-    if (L.includes("obstacle")) return { fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle' };
-    if (L.includes("wait")) return { fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting' };
-    return { fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving' };
-  }
+function updateCache(slotKey, r) {
+  const t = parseTelemetry(r.last_data);
 
-  function updateCache(slotKey, r) {
-    const t = parseTelemetry(r.last_data);
+  if (t.raw) cache[slotKey].raw = t.raw;
+  if (t.action && t.action !== "No data") cache[slotKey].action = t.action;
+  if (t.speed !== null) cache[slotKey].speed = t.speed;
+  if (t.distance !== null) cache[slotKey].distance = t.distance;
 
-    if (t.raw) cache[slotKey].raw = t.raw;
-    if (t.action && t.action !== "No data") cache[slotKey].action = t.action;
+  const d = safeDate(r.last_seen);
+  if (d) cache[slotKey].seen = d;
+}
 
-    // only overwrite speed/distance when present
-    if (t.speed !== null) cache[slotKey].speed = t.speed;
-    if (t.distance !== null) cache[slotKey].distance = t.distance;
+function formatCard(slotKey, r, isBig, selected) {
+  const offline = isOfflineRobot(r);
+  if (!offline) updateCache(slotKey, r);
 
-    const d = safeDate(r.last_seen);
-    if (d) cache[slotKey].seen = d;
-  }
+  const action = offline ? "Offline" : (cache[slotKey].action || "Online");
+  const st = getStatusProps(action, offline);
 
-  function formatCard(slotKey, r, isBig, selected) {
-    const offline = isOfflineRobot(r);
-    if (!offline) updateCache(slotKey, r);
+  const speed = offline ? "-" : (cache[slotKey].speed || "-");
+  const dist  = offline ? "-" : (cache[slotKey].distance || "-");
+  const raw   = offline ? "" : (cache[slotKey].raw || "");
+  const seen = cache[slotKey].seen;
+  const seenStr = seen ? seen.toLocaleTimeString() : "-";
 
-    const action = offline ? "Offline" : (cache[slotKey].action || "Online");
-    const st = getStatusProps(action, offline);
+  return `
+    <div class="${isBig?'robot-card-big':'robot-card'}${selected?' selected':''}"
+         data-key="${slotKey}" tabindex="0" title="Click me">
+      <div class="robot-title">${slotKey}</div>
 
-    const speed = offline ? "-" : (cache[slotKey].speed || "-");
-    const dist  = offline ? "-" : (cache[slotKey].distance || "-");
-    const raw   = offline ? "" : (cache[slotKey].raw || "");
+      <svg class="tesla-car-svg" viewBox="0 0 180 86">
+        <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
+        <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
+        <rect x="30" y="42" width="120" height="19" rx="9" fill="${st.fill}"/>
+        <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${st.glass}" fill-opacity="0.72"/>
+        <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+        <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+        <ellipse cx="31" cy="53" rx="4" ry="2" fill="${st.lights}" />
+        <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
+      </svg>
 
-    const seen = cache[slotKey].seen;
-    const seenStr = seen ? seen.toLocaleTimeString() : "-";
+      <div class="status-box ${st.status}">${action}</div>
 
-    return `
-      <div class="${isBig?'robot-card-big':'robot-card'}${selected?' selected':''}"
-           data-key="${slotKey}" tabindex="0" title="Click me">
-        <div class="robot-title">${slotKey}</div>
-
-        <svg class="tesla-car-svg" viewBox="0 0 180 86">
-          <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
-          <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
-          <rect x="30" y="42" width="120" height="19" rx="9" fill="${st.fill}"/>
-          <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${st.glass}" fill-opacity="0.72"/>
-          <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
-          <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
-          <ellipse cx="31" cy="53" rx="4" ry="2" fill="${st.lights}" />
-          <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
-        </svg>
-
-        <div class="status-box ${st.status}">${action}</div>
-
-        <div class="metrics">
-          <div class="metric-line"><b>Speed:</b> ${speed}</div>
-          <div class="metric-line"><b>Distance:</b> ${dist}</div>
-          <div class="muted">Seen: ${seenStr}</div>
-          <div class="raw">${raw}</div>
-        </div>
-
-        ${isBig ? `
-          <div id="focus-controls">
-            <button class="control-btn" onclick="sendRobotCommand('${slotKey}','START');event.stopPropagation();">&#9654; On</button>
-            <button class="control-btn off" onclick="sendRobotCommand('${slotKey}','STOP');event.stopPropagation();">&#9632; Off</button>
-          </div>
-        ` : ''}
+      <div class="metrics">
+        <div class="metric-line"><b>Speed:</b> ${speed}</div>
+        <div class="metric-line"><b>Distance:</b> ${dist}</div>
+        <div class="muted">Seen: ${seenStr}</div>
+        <div class="raw">${raw}</div>
       </div>
-    `;
+
+      ${isBig ? `
+        <div id="focus-controls">
+          <button class="control-btn" onclick="sendRobotCommand('${slotKey}','START');event.stopPropagation();">&#9654; On</button>
+          <button class="control-btn off" onclick="sendRobotCommand('${slotKey}','STOP');event.stopPropagation();">&#9632; Off</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function render() {
+  const dash = document.getElementById("dashboard-flex");
+  if (!dash) return;
+
+  if (focusRobotKey) {
+    const big = allRobots.find(x => x.slot === focusRobotKey);
+    const minis = allRobots.filter(x => x.slot !== focusRobotKey);
+
+    dash.innerHTML = "";
+    dash.innerHTML += formatCard(big.slot, big.data, true, true);
+    dash.innerHTML += `<div id="sidebar-right"></div>`;
+    const sidebar = document.getElementById("sidebar-right");
+    minis.forEach(m => sidebar.innerHTML += formatCard(m.slot, m.data, false, false));
+
+    document.querySelectorAll(".robot-card, .robot-card-big").forEach(el => {
+      const k = el.getAttribute("data-key");
+      el.onclick = () => { focusRobotKey = (k === focusRobotKey) ? null : k; render(); };
+      el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = (k === focusRobotKey) ? null : k; render(); } };
+    });
+  } else {
+    dash.innerHTML = allRobots.map(x => formatCard(x.slot, x.data, false, false)).join("");
+    document.querySelectorAll(".robot-card").forEach(el => {
+      el.onclick = () => { focusRobotKey = el.getAttribute("data-key"); render(); };
+      el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = el.getAttribute("data-key"); render(); } };
+    });
+  }
+}
+
+async function sendRobotCommand(robotName, cmd) {
+  try {
+    await fetch('/api/command', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ robot_id: robotName, command: cmd })
+    });
+  } catch (e) {}
+}
+
+// --- Relay mode ---
+function robotFinished(robotName) {
+  const raw = (cache[robotName]?.raw || "").toLowerCase();
+  const action = (cache[robotName]?.action || "").toLowerCase();
+  return raw.includes("race finished") || action.includes("race finished");
+}
+
+function updateRelayUI(text) {
+  const el = document.getElementById("relayState");
+  if (el) el.textContent = text;
+}
+
+function updateRelayButton() {
+  const btn = document.getElementById("relayBtn");
+  if (!btn) return;
+  btn.textContent = relayEnabled ? "▶ Relay Mode: ON" : "▶ Relay Mode: OFF";
+}
+
+async function stopAll() {
+  await sendRobotCommand("Pink Panther", "STOP");
+  await sendRobotCommand("James Bond", "STOP");
+  await sendRobotCommand("BDP", "STOP");
+}
+
+async function stepRelay() {
+  if (!relayEnabled) return;
+
+  // step 0: wait for Pink Panther finish, then send START_R2
+  // step 1: wait for James Bond finish, then send START_R3
+  // step 2: wait for BDP finish, then done
+  const s = RELAY[relayStep];
+  if (!s) {
+    relayEnabled = false;
+    updateRelayButton();
+    updateRelayUI("Relay: done ✅");
+    return;
   }
 
-  function render() {
-    const dash = document.getElementById("dashboard-flex");
-    if (!dash) return;
-
-    if (focusRobotKey) {
-      const big = allRobots.find(x => x.slot === focusRobotKey);
-      const minis = allRobots.filter(x => x.slot !== focusRobotKey);
-
-      dash.innerHTML = "";
-      dash.innerHTML += formatCard(big.slot, big.data, true, true);
-      dash.innerHTML += `<div id="sidebar-right"></div>`;
-      const sidebar = document.getElementById("sidebar-right");
-      minis.forEach(m => sidebar.innerHTML += formatCard(m.slot, m.data, false, false));
-
-      document.querySelectorAll(".robot-card, .robot-card-big").forEach(el => {
-        const k = el.getAttribute("data-key");
-        el.onclick = () => { focusRobotKey = (k === focusRobotKey) ? null : k; render(); };
-        el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = (k === focusRobotKey) ? null : k; render(); } };
-      });
-    } else {
-      dash.innerHTML = allRobots.map(x => formatCard(x.slot, x.data, false, false)).join("");
-      document.querySelectorAll(".robot-card").forEach(el => {
-        el.onclick = () => { focusRobotKey = el.getAttribute("data-key"); render(); };
-        el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = el.getAttribute("data-key"); render(); } };
-      });
-    }
-  }
-
-  async function sendRobotCommand(robotName, cmd) {
-    try {
-      await fetch('/api/command', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ robot_id: robotName, command: cmd })
-      });
-    } catch (e) {}
-  }
-
-  // --- Auto Race logic ---
-  function robotFinished(slotKey) {
-    const raw = (cache[slotKey]?.raw || "").toLowerCase();
-    const action = (cache[slotKey]?.action || "").toLowerCase();
-    return raw.includes(FINISH_KEYWORD) || action.includes(FINISH_KEYWORD);
-  }
-
-  function robotHasAnyActivity(slotKey) {
-    const raw = (cache[slotKey]?.raw || "").toLowerCase();
-    const action = (cache[slotKey]?.action || "").toLowerCase();
-    if (!raw && (!action || action === "no data")) return false;
-    if (action === "offline") return false;
-    return true;
-  }
-
-  async function stepAutoRace() {
-    const stateEl = document.getElementById("autoState");
-    if (!autoEnabled) {
-      if (stateEl) stateEl.textContent = "Auto: idle";
+  if (robotFinished(s.who)) {
+    if (!s.next) {
+      relayEnabled = false;
+      updateRelayButton();
+      updateRelayUI("Relay: done ✅");
       return;
     }
-
-    if (autoIndex >= sequence.length) {
-      if (stateEl) stateEl.textContent = "Auto: done ✅";
-      autoEnabled = false;
-      updateAutoButton();
-      return;
-    }
-
-    const current = sequence[autoIndex];
-
-    if (robotFinished(current)) {
-      autoIndex++;
-      if (autoIndex >= sequence.length) {
-        if (stateEl) stateEl.textContent = "Auto: done ✅";
-        autoEnabled = false;
-        updateAutoButton();
-        return;
-      }
-    }
-
-    const active = sequence[autoIndex];
-    if (stateEl) stateEl.textContent = `Auto: waiting on ${active}`;
 
     const now = Date.now();
-    if (now - lastAutoSentAt < AUTO_COOLDOWN_MS) return;
-
-    const a = (cache[active]?.action || "").toLowerCase();
-    if (a === "offline") return;
-
-    const raw = (cache[active]?.raw || "").toLowerCase();
-    const looksWaiting = raw.includes("waiting for start") || a.includes("waiting");
-
-    if (!robotHasAnyActivity(active) || looksWaiting) {
-      lastAutoSentAt = now;
-      await sendRobotCommand(active, "START");
-      if (stateEl) stateEl.textContent = `Auto: sent START to ${active}`;
+    if (now - lastRelaySentAt < RELAY_COOLDOWN_MS) {
+      updateRelayUI(`Relay: ${s.who} finished • waiting cooldown…`);
+      return;
     }
+
+    lastRelaySentAt = now;
+    updateRelayUI(`Relay: ${s.who} finished • sending ${s.next.cmd} → ${s.next.who}`);
+    await sendRobotCommand(s.next.who, s.next.cmd);
+
+    relayStep += 1; // move to next watcher
+  } else {
+    updateRelayUI(`Relay: watching ${s.who}…`);
   }
+}
 
-  function updateAutoButton() {
-    const btn = document.getElementById("autoBtn");
-    if (!btn) return;
-    btn.textContent = autoEnabled ? "▶ Auto Race: ON" : "▶ Auto Race: OFF";
-    btn.className = autoEnabled ? "btn btn-auto" : "btn btn-auto";
+async function fetchRobots() {
+  const top = document.getElementById("top-info");
+
+  try {
+    const res = await fetch("/api/robots", { cache: "no-store" });
+    const payload = await res.json();
+    const robotsArr = normalizePayload(payload);
+
+    allRobots = slots.map(s => ({ slot: s.key, data: pickRobotForSlot(s, robotsArr) }));
+
+    if (top) top.textContent = `Live • last update ${new Date().toLocaleTimeString()}`;
+    render();
+
+    await stepRelay();
+  } catch (e) {
+    if (top) top.textContent = "Disconnected • retrying…";
   }
+}
 
-  async function stopAll() {
-    await sendRobotCommand("Pink Panther", "STOP");
-    await sendRobotCommand("James Bond", "STOP");
-    await sendRobotCommand("BDP", "STOP");
+// Buttons
+document.getElementById("relayBtn").onclick = async () => {
+  relayEnabled = !relayEnabled;
+  if (relayEnabled) {
+    relayStep = 0;
+    lastRelaySentAt = 0;
+    updateRelayUI("Relay: watching Pink Panther…");
+    // IMPORTANT: do NOT start Pink Panther automatically (per your request)
+  } else {
+    updateRelayUI("Relay: idle");
   }
+  updateRelayButton();
+};
 
-  async function fetchRobots() {
-    const top = document.getElementById("top-info");
+document.getElementById("stopAllBtn").onclick = async () => {
+  relayEnabled = false;
+  updateRelayButton();
+  updateRelayUI("Relay: stopped ■");
+  await stopAll();
+};
 
-    try {
-      const res = await fetch("/api/robots", { cache: "no-store" });
-      const payload = await res.json();
-      const robotsArr = normalizePayload(payload);
-
-      allRobots = slots.map(s => ({ slot: s.key, data: pickRobotForSlot(s, robotsArr) }));
-
-      if (top) top.textContent = `Live • last update ${new Date().toLocaleTimeString()}`;
-      render();
-
-      await stepAutoRace();
-    } catch (e) {
-      if (top) top.textContent = "Disconnected • retrying…";
-    }
-  }
-
-  document.getElementById("autoBtn").onclick = async () => {
-    autoEnabled = !autoEnabled;
-    if (autoEnabled) {
-      autoIndex = 0;
-      lastAutoSentAt = 0;
-      await stopAll();
-    }
-    updateAutoButton();
-  };
-
-  document.getElementById("stopAllBtn").onclick = async () => {
-    autoEnabled = false;
-    updateAutoButton();
-    await stopAll();
-    const stateEl = document.getElementById("autoState");
-    if (stateEl) stateEl.textContent = "Auto: stopped ■";
-  };
-
-  updateAutoButton();
-  fetchRobots();
-  setInterval(fetchRobots, 800);
+updateRelayButton();
+fetchRobots();
+setInterval(fetchRobots, 800);
 </script>
 </body>
 </html>
