@@ -153,25 +153,11 @@ h1 {
   min-height: 1.8em;
 }
 
-.status-box.obstacle {
-  color: #ff4848;
-}
-
-.status-box.moving {
-  color: #39ffb2;
-}
-
-.status-box.waiting {
-  color: #ffd700;
-}
-
-.status-box.offline {
-  color: #8f96a7;
-}
-
-.status-box.finished {
-  color: #c7a6ff;
-}
+.status-box.obstacle { color: #ff4848; }
+.status-box.moving   { color: #39ffb2; }
+.status-box.waiting  { color: #ffd700; }
+.status-box.offline  { color: #8f96a7; }
+.status-box.finished { color: #c7a6ff; }
 
 .metrics {
   margin-top: 0.8rem;
@@ -226,11 +212,6 @@ h1 {
   box-shadow: 0 2px 12px #11eae745;
 }
 
-.control-btn.off {
-  background: linear-gradient(92deg, #ff4848 30%, #ffd700 95%);
-  color: #251f00;
-}
-
 .control-btn:active {
   filter: brightness(0.91);
 }
@@ -262,7 +243,6 @@ h1 {
 }
 
 /* ---------- Direction Arrow Animation ---------- */
-/* We show an animated arrow instead of the text "Turning left/right..." */
 
 .dir {
   display: inline-block;
@@ -274,7 +254,6 @@ h1 {
 }
 
 .dir::before { content: "↑"; }
-
 .dir-left::before    { content: "←"; }
 .dir-right::before   { content: "→"; }
 .dir-forward::before { content: "↑"; }
@@ -288,4 +267,31 @@ h1 {
   0%   { transform: translateY(0) scale(1); opacity: 0.75; }
   50%  { transform: translateY(-2px) scale(1.08); opacity: 1; }
   100% { transform: translateY(0) scale(1); opacity: 0.75; }
+}
+
+/* ---------- Timer styling ---------- */
+
+.timer-line {
+  margin-top: 0.2rem;
+}
+
+.timer-value {
+  display: inline-block;
+  margin-left: 0.35rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.timer-running {
+  animation: timerGlow 0.8s infinite ease-in-out;
+}
+
+.timer-done {
+  color: #c7a6ff;
+}
+
+@keyframes timerGlow {
+  0%   { opacity: 0.78; }
+  50%  { opacity: 1; }
+  100% { opacity: 0.78; }
 }
