@@ -2,340 +2,740 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <!-- Title shown in the browser tab -->
   <title>Relayrobot Dashboard</title>
+
+  <!-- Load the CSS file that styles this page -->
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 
 <body>
+  <!-- Main page title -->
   <h1>Relayrobot Dashboard</h1>
+
+  <!-- Small status line at the top (we update this from JavaScript) -->
   <div id="top-info">Connecting…</div>
 
+  <!-- Top controls row (relay status pill + relay toggle button) -->
   <div id="controls">
+    <!-- This pill shows relay mode status text -->
     <div id="relayState" class="pill">Relay: idle</div>
+
+    <!-- Button that turns relay mode on/off -->
     <button id="relayBtn" class="btn btn-auto">▶ Relay Mode: OFF</button>
   </div>
 
+  <!-- This is where we will inject the robot cards with JavaScript -->
   <div id="dashboard-flex"></div>
 
 <script>
 /*
-  - Polls /api/robots every ~0.8s
-  - Shows 3 robot cards
-  - Relay Mode:
-      Pink Panther finishes -> send START_R2
-      James Bond finishes   -> send START_R3
-  - Added:
-      - Per-robot timer that starts when robot "starts" and stops on "Race Finished"
+  WHAT THIS SCRIPT DOES (in simple words):
+
+  - Every ~0.8 seconds, we call GET /api/robots to get fresh robot data.
+  - We show 3 robots as cards: Pink Panther, James Bond, BDP.
+  - Relay mode:
+      When Pink Panther finishes -> we send START_R2 to start James Bond.
+      When James Bond finishes   -> we send START_R3 to start BDP.
+  - Each robot also has a timer:
+      Timer starts when we detect a start (or when we send a START command).
+      Timer stops when we detect "Race Finished".
 */
 
-// ----- Fixed robot “slots” shown on screen -----
+/* -------------------------------------------------------------------------- */
+/* 1) CONSTANTS: robot names, alias mapping, and relay steps                    */
+/* -------------------------------------------------------------------------- */
+
+/* These are the 3 “slots” we ALWAYS show on screen, in this exact order. */
 const ROBOTS = ["Pink Panther", "James Bond", "BDP"];
 
-// Accept different ids coming from API (R1/R2/R3 or names)
+/*
+  The API might identify a robot in different ways:
+  - sometimes it sends "R1", "R2", "R3"
+  - sometimes it sends the name
+  - sometimes it sends "robot 1" or just "1"
+  This mapping helps us match incoming API robot objects to our fixed slots.
+*/
 const ALIASES = {
   "Pink Panther": ["pink panther", "r1", "robot 1", "1"],
   "James Bond":   ["james bond", "r2", "robot 2", "2"],
   "BDP":          ["bdp", "r3", "robot 3", "3"]
 };
 
-// Relay steps: watch who, then start the next robot
+/*
+  Relay steps:
+  - “watch”  = which robot we are waiting to finish
+  - “nextName” = which robot we start next
+  - “cmd” = which command we send to start the next robot
+  The last entry has nextName=null so relay ends after BDP finishes.
+*/
 const RELAY = [
   { watch: "Pink Panther", nextName: "James Bond", cmd: "START_R2" },
   { watch: "James Bond",   nextName: "BDP",        cmd: "START_R3" },
   { watch: "BDP",          nextName: null,         cmd: null }
 ];
 
-// ----- UI state -----
+/* -------------------------------------------------------------------------- */
+/* 2) UI STATE: things that can change while the page is running               */
+/* -------------------------------------------------------------------------- */
+
+/*
+  focus:
+  - null means “no robot selected”, so we show 3 normal cards.
+  - if it equals a robot name, we show that robot as a big card with buttons.
+*/
 let focus = null;
+
+/* allRobots will hold the 3 robot objects that we display on screen. */
 let allRobots = [];
+
+/* relayEnabled tells us whether relay mode is currently ON or OFF. */
 let relayEnabled = false;
+
+/* relayStep is which step we are currently on in the RELAY array. */
 let relayStep = 0;
+
+/* lastRelaySentAt is used to enforce a cooldown (prevents spam). */
 let lastRelaySentAt = 0;
+
+/* cooldown time so we don’t send relay commands too fast */
 const RELAY_COOLDOWN_MS = 2500;
 
-// We keep last known values so speed doesn’t “disappear”
+/* -------------------------------------------------------------------------- */
+/* 3) CACHES: remember last values so UI doesn’t “blink” when data is missing  */
+/* -------------------------------------------------------------------------- */
+
+/*
+  cache stores the last known values per robot.
+  Why? Sometimes the API might not include speed every time,
+  so without a cache the UI would constantly show "-" and then a value again.
+*/
 const cache = {
   "Pink Panther": { action:"No data", speed:"-", raw:"", seen:null },
   "James Bond":   { action:"No data", speed:"-", raw:"", seen:null },
   "BDP":          { action:"No data", speed:"-", raw:"", seen:null }
 };
 
-// ----- Timer state (per robot) -----
+/* -------------------------------------------------------------------------- */
+/* 4) TIMERS: track how long each robot took                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+  timers stores the timer info per robot.
+  - started: if the timer ever started
+  - startMs: start time in milliseconds (Date.now())
+  - endMs: stop time in milliseconds (or null while running)
+*/
 const timers = {
   "Pink Panther": { started:false, startMs:null, endMs:null },
   "James Bond":   { started:false, startMs:null, endMs:null },
   "BDP":          { started:false, startMs:null, endMs:null }
 };
 
-// ----- Small helpers -----
-function setTop(text){ const el=document.getElementById("top-info"); if(el) el.textContent=text; }
-function setRelayText(text){ const el=document.getElementById("relayState"); if(el) el.textContent=text; }
-function setRelayBtn(){ const b=document.getElementById("relayBtn"); if(b) b.textContent = relayEnabled ? "▶ Relay Mode: ON" : "▶ Relay Mode: OFF"; }
+/* -------------------------------------------------------------------------- */
+/* 5) VERY SMALL UI HELPER FUNCTIONS                                           */
+/* -------------------------------------------------------------------------- */
 
+/* Change the top status line text (ex: “Live • last update ...”) */
+function setTop(text){
+  const el = document.getElementById("top-info");
+  if(el) el.textContent = text;
+}
+
+/* Change the relay pill text (ex: “Relay: watching ...”) */
+function setRelayText(text){
+  const el = document.getElementById("relayState");
+  if(el) el.textContent = text;
+}
+
+/* Update the relay button label based on relayEnabled */
+function setRelayBtn(){
+  const b = document.getElementById("relayBtn");
+  if(b){
+    b.textContent = relayEnabled ? "▶ Relay Mode: ON" : "▶ Relay Mode: OFF";
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 6) DATE PARSING: safely handle different timestamp formats from the API     */
+/* -------------------------------------------------------------------------- */
+
+/*
+  safeDate(x):
+  - tries to convert a value into a JavaScript Date
+  - returns a Date object if it works
+  - returns null if it can’t parse it
+*/
 function safeDate(x){
+  /* If x is empty, we can’t make a date */
   if(!x) return null;
-  let d=new Date(x);
+
+  /* Try normal Date parsing first */
+  let d = new Date(x);
+
+  /* If it parsed correctly, return the Date */
   if(!isNaN(d.getTime())) return d;
-  if(typeof x==="string" && x.includes(" ") && !x.includes("T")){
-    d=new Date(x.replace(" ","T"));
+
+  /*
+    Sometimes APIs send "YYYY-MM-DD HH:MM:SS" (with a space).
+    JavaScript prefers "YYYY-MM-DDTHH:MM:SS" (with a T).
+    So we try replacing the first space with T.
+  */
+  if(typeof x === "string" && x.includes(" ") && !x.includes("T")){
+    d = new Date(x.replace(" ", "T"));
     if(!isNaN(d.getTime())) return d;
   }
+
+  /* If nothing worked, return null */
   return null;
 }
 
+/* -------------------------------------------------------------------------- */
+/* 7) NORMALIZE API PAYLOAD: API may return array OR object                    */
+/* -------------------------------------------------------------------------- */
+
+/*
+  normalizePayload(p):
+  - if the API returns an array already: return it
+  - if the API returns an object like {"R1":"...", "R2":"..."}:
+    convert it to an array of robot objects in the same shape we expect
+*/
 function normalizePayload(p){
+  /* If it's already an array, it's fine */
   if(Array.isArray(p)) return p;
 
+  /* If it's a plain object, try to convert it */
   if(p && typeof p === "object"){
-    const keys=Object.keys(p);
+    const keys = Object.keys(p);
+
+    /* If object has no keys, nothing to show */
     if(!keys.length) return [];
+
+    /*
+      If the values are strings, we treat it like:
+      { "R1": "message text", "R2": "message text" }
+    */
     if(typeof p[keys[0]] === "string"){
-      return keys.map(k=>({ robot_id:k, robot_name:k, last_seen:null, ping_count:0, last_data:p[k]||"" }));
+      return keys.map(k => ({
+        robot_id: k,          /* use the key as id */
+        robot_name: k,        /* also use key as name */
+        last_seen: null,      /* we don't have a last_seen here */
+        ping_count: 0,        /* not available in this format */
+        last_data: p[k] || "" /* the actual message text */
+      }));
     }
   }
+
+  /* If we don't recognize the format, return empty list */
   return [];
 }
 
+/* -------------------------------------------------------------------------- */
+/* 8) MATCH ROBOT: attach incoming API robot objects to our fixed slots        */
+/* -------------------------------------------------------------------------- */
+
+/*
+  matchRobot(slotName, robotsArr):
+  - slotName is one of the fixed names from ROBOTS (ex: "BDP")
+  - robotsArr is the array from the API
+  This tries to find the correct robot object from API for this slot.
+*/
 function matchRobot(slotName, robotsArr){
+  /* Get the list of acceptable alias strings for this robot */
   const a = ALIASES[slotName];
-  const lower = a.map(x=>x.toLowerCase());
 
-  let r = robotsArr.find(x => lower.includes(String(x.robot_id||"").toLowerCase()))
-       || robotsArr.find(x => lower.includes(String(x.robot_name||"").toLowerCase()));
+  /* Make them lowercase so comparisons are easier */
+  const lower = a.map(x => x.toLowerCase());
 
-  return r || { robot_id: slotName, robot_name: slotName, last_seen:null, ping_count:0, last_data:"" };
+  /*
+    Try to find a matching object:
+    - first compare by robot_id
+    - if not found, compare by robot_name
+  */
+  let r =
+    robotsArr.find(x => lower.includes(String(x.robot_id || "").toLowerCase()))
+    || robotsArr.find(x => lower.includes(String(x.robot_name || "").toLowerCase()));
+
+  /*
+    If no match was found, return a “blank” robot object
+    so the UI still shows the card.
+  */
+  return r || {
+    robot_id: slotName,
+    robot_name: slotName,
+    last_seen: null,
+    ping_count: 0,
+    last_data: ""
+  };
 }
 
+/* -------------------------------------------------------------------------- */
+/* 9) PARSE TELEMETRY: turn raw message text into action + speed               */
+/* -------------------------------------------------------------------------- */
+
+/*
+  parseTelemetry(text):
+  - text is the last_data string from the API
+  - returns an object like { action, speed, raw }
+*/
 function parseTelemetry(text){
-  const raw = (text||"").toString().trim();
+  /* raw = message text as a clean string */
+  const raw = (text || "").toString().trim();
+
+  /* L = lowercase version to make "includes" checks easy */
   const L = raw.toLowerCase();
 
+  /* Default action if we don't find anything */
   let action = "No data";
-  if(L.includes("race finished")) action="Race Finished";
-  else if(L.includes("dropping cone")) action="Dropping Cone";
-  else if(L.includes("started the race")) action="Started Race";
-  else if(L.includes("waiting for start")) action="Waiting for start";
-  else if(L.includes("turning left")) action="Turning Left";
-  else if(L.includes("turning right")) action="Turning Right";
-  else if(L.includes("lost the line")) action="Searching (Lost line)";
-  else if(L.includes("object found") || L.includes("obstacle")) action="Obstacle Detected";
-  else if(L.includes("robot online")) action="Online";
-  else if(L.includes("motor speed")) action="Moving";
-  else if(raw.length) action=raw;
 
-  let speed=null;
-  const m=raw.match(/motor\s*speed\s*:\s*([0-9.]+)/i);
-  if(m) speed=m[1];
+  /* Look for keywords and set a friendly action label */
+  if(L.includes("race finished")) action = "Race Finished";
+  else if(L.includes("dropping cone")) action = "Dropping Cone";
+  else if(L.includes("started the race")) action = "Started Race";
+  else if(L.includes("waiting for start")) action = "Waiting for start";
+  else if(L.includes("turning left")) action = "Turning Left";
+  else if(L.includes("turning right")) action = "Turning Right";
+  else if(L.includes("lost the line")) action = "Searching (Lost line)";
+  else if(L.includes("object found") || L.includes("obstacle")) action = "Obstacle Detected";
+  else if(L.includes("robot online")) action = "Online";
+  else if(L.includes("motor speed")) action = "Moving";
+  else if(raw.length) action = raw; /* if we have text but no rule matched, show raw */
 
+  /*
+    Extract speed from something like:
+    "Motor Speed: 120"
+    using a regex (pattern match).
+  */
+  let speed = null;
+  const m = raw.match(/motor\s*speed\s*:\s*([0-9.]+)/i);
+  if(m) speed = m[1]; /* group 1 = the number */
+
+  /* Return the parsed result */
   return { action, speed, raw };
 }
 
+/* -------------------------------------------------------------------------- */
+/* 10) OFFLINE LOGIC: decide if a robot should be shown as offline             */
+/* -------------------------------------------------------------------------- */
+
+/*
+  isOffline(slotName):
+  - If we have any real message recently, treat it as online.
+  - If last_seen is too old (>10 seconds), treat it as offline.
+*/
 function isOffline(slotName){
+  /* seen = last time we saw the robot (Date object) */
   const seen = cache[slotName].seen;
-  const raw = (cache[slotName].raw||"").trim().toLowerCase();
+
+  /* raw message text stored in cache */
+  const raw = (cache[slotName].raw || "").trim().toLowerCase();
+
+  /* If we have any message text that isn't "no data", treat as online */
   if(raw && raw !== "no data") return false;
-  if(seen) return (Date.now()-seen.getTime()) > 10000;
+
+  /* If we have a timestamp, check if it’s older than 10 seconds */
+  if(seen) return (Date.now() - seen.getTime()) > 10000;
+
+  /* Otherwise, we don't know -> treat as offline */
   return true;
 }
 
+/* -------------------------------------------------------------------------- */
+/* 11) STATUS STYLE: decide how the car SVG should look based on status         */
+/* -------------------------------------------------------------------------- */
+
+/*
+  statusStyle(action, offline):
+  - returns colors and a status string used by CSS classes
+*/
 function statusStyle(action, offline){
-  if(offline) return { status:"offline", fill:"#888", glass:"#cccccc", lights:"#adacac" };
-  const L=(action||"").toLowerCase();
-  if(L.includes("finished")) return { status:"finished", fill:"#c7a6ff", glass:"#fff", lights:"#fffbe0" };
-  if(L.includes("obstacle")) return { status:"obstacle", fill:"#ff4848", glass:"#ffd7c0", lights:"#ffe3d6" };
-  if(L.includes("wait")) return { status:"waiting", fill:"#ffd700", glass:"#fffbe4", lights:"#fffbe0" };
+  /* If offline, use gray styling */
+  if(offline){
+    return { status:"offline", fill:"#888", glass:"#cccccc", lights:"#adacac" };
+  }
+
+  /* Convert action to lowercase for easier checking */
+  const L = (action || "").toLowerCase();
+
+  /* If finished, make it purple-ish */
+  if(L.includes("finished")){
+    return { status:"finished", fill:"#c7a6ff", glass:"#fff", lights:"#fffbe0" };
+  }
+
+  /* If obstacle, make it red-ish */
+  if(L.includes("obstacle")){
+    return { status:"obstacle", fill:"#ff4848", glass:"#ffd7c0", lights:"#ffe3d6" };
+  }
+
+  /* If waiting, make it yellow-ish */
+  if(L.includes("wait")){
+    return { status:"waiting", fill:"#ffd700", glass:"#fffbe4", lights:"#fffbe0" };
+  }
+
+  /* Otherwise, default to “moving” (blue) */
   return { status:"moving", fill:"#23bffe", glass:"#fff", lights:"#fffbe0" };
 }
 
+/* -------------------------------------------------------------------------- */
+/* 12) DIRECTION ICON: decide which arrow icon should show                      */
+/* -------------------------------------------------------------------------- */
+
+/*
+  directionClass(action, raw):
+  - chooses a CSS class like "dir-left", "dir-right", "dir-forward"
+  - the CSS decides which arrow emoji appears and how it animates
+*/
 function directionClass(action, raw){
   const a = (action || "").toLowerCase();
   const r = (raw || "").toLowerCase();
 
-  if (a.includes("finished")) return "dir-finish";
-  if (a.includes("offline")) return "dir-offline";
-  if (a.includes("wait")) return "dir-wait";
-  if (a.includes("obstacle")) return "dir-obstacle";
+  /* Special states first */
+  if(a.includes("finished")) return "dir-finish";
+  if(a.includes("offline")) return "dir-offline";
+  if(a.includes("wait")) return "dir-wait";
+  if(a.includes("obstacle")) return "dir-obstacle";
 
-  if (a.includes("turning left") || r.includes("left")) return "dir-left";
-  if (a.includes("turning right") || r.includes("right")) return "dir-right";
+  /* Turning detection */
+  if(a.includes("turning left") || r.includes("left")) return "dir-left";
+  if(a.includes("turning right") || r.includes("right")) return "dir-right";
 
+  /* Default = forward arrow */
   return "dir-forward";
 }
 
-// ----- Timer helpers -----
+/* -------------------------------------------------------------------------- */
+/* 13) TIMER RULES: detect start/stop phrases in messages                       */
+/* -------------------------------------------------------------------------- */
+
+/*
+  shouldStartTimer(action, raw):
+  - returns true if the text suggests the robot started
+*/
 function shouldStartTimer(action, raw){
-  const a=(action||"").toLowerCase();
-  const r=(raw||"").toLowerCase();
+  const a = (action || "").toLowerCase();
+  const r = (raw || "").toLowerCase();
   return a.includes("started race") || r.includes("started the race");
 }
 
+/*
+  shouldStopTimer(action, raw):
+  - returns true if the text suggests the robot finished
+*/
 function shouldStopTimer(action, raw){
-  const a=(action||"").toLowerCase();
-  const r=(raw||"").toLowerCase();
+  const a = (action || "").toLowerCase();
+  const r = (raw || "").toLowerCase();
   return a.includes("race finished") || r.includes("race finished");
 }
 
+/*
+  resetAndStartTimer(slotName):
+  - forcibly resets the timer and starts it right now
+  - used when we manually press On or when relay starts the next robot
+*/
 function resetAndStartTimer(slotName){
   const t = timers[slotName];
-  t.started = true;
-  t.startMs = Date.now();
-  t.endMs = null;
+  t.started = true;        /* mark as started */
+  t.startMs = Date.now();  /* start time now */
+  t.endMs = null;          /* not finished yet */
 }
 
+/*
+  updateTimerState(slotName, action, raw):
+  - reads the latest action/raw and updates the timer if needed
+*/
 function updateTimerState(slotName, action, raw){
   const t = timers[slotName];
 
-  // If robot sends a "started the race" style message, start timer if not running yet
+  /* If it hasn't started yet and we detect a start phrase -> start it */
   if(!t.started && shouldStartTimer(action, raw)){
     resetAndStartTimer(slotName);
   }
 
-  // Stop timer when it finishes (only if running and not already stopped)
+  /* If it's running and we detect finished phrase -> stop it */
   if(t.started && t.endMs === null && shouldStopTimer(action, raw)){
     t.endMs = Date.now();
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* 14) TIMER DISPLAY: format milliseconds into mm:ss.cc                         */
+/* -------------------------------------------------------------------------- */
+
+/*
+  formatMs(ms):
+  - converts a duration in milliseconds into "MM:SS.CC"
+  - CC means centiseconds (hundredths of a second)
+*/
 function formatMs(ms){
+  /* If ms is missing, show placeholder */
   if(ms === null || ms === undefined) return "--:--.--";
+
+  /* Avoid negative numbers */
   const total = Math.max(0, ms);
+
+  /* Calculate minutes, seconds, and centiseconds */
   const minutes = Math.floor(total / 60000);
   const seconds = Math.floor((total % 60000) / 1000);
   const centis  = Math.floor((total % 1000) / 10);
+
+  /* Make sure each piece has 2 digits */
   const mm = String(minutes).padStart(2,'0');
   const ss = String(seconds).padStart(2,'0');
   const cc = String(centis).padStart(2,'0');
+
+  /* Build the final time string */
   return `${mm}:${ss}.${cc}`;
 }
 
+/*
+  getTimerDisplay(slotName):
+  - returns an object that the HTML uses to render the timer line
+  - includes flags that add CSS classes:
+      running = true while timer is counting
+      done    = true after finish
+*/
 function getTimerDisplay(slotName){
   const t = timers[slotName];
-  if(!t.started) return { label:"Timer:", value:"--:--.--", running:false, done:false };
-  if(t.endMs !== null) {
+
+  /* If never started, show placeholder */
+  if(!t.started){
+    return { label:"Timer:", value:"--:--.--", running:false, done:false };
+  }
+
+  /* If ended, show final time */
+  if(t.endMs !== null){
     return { label:"Time:", value: formatMs(t.endMs - t.startMs), running:false, done:true };
   }
+
+  /* Otherwise, it's running right now */
   return { label:"Time:", value: formatMs(Date.now() - t.startMs), running:true, done:false };
 }
 
-// Send command to Render, which forwards to your laptop API
+/* -------------------------------------------------------------------------- */
+/* 15) SENDING COMMANDS: send POST requests to /api/command                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+  sendRobotCommand(robotName, cmd):
+  - makes a POST request to /api/command
+  - your backend forwards this command to the actual robot system
+*/
 async function sendRobotCommand(robotName, cmd){
   try{
     await fetch("/api/command", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ robot_id: robotName, command: cmd })
+      method: "POST", /* POST = we are sending data */
+      headers: { "Content-Type": "application/json" }, /* tell server it's JSON */
+      body: JSON.stringify({
+        robot_id: robotName, /* which robot */
+        command: cmd         /* which command */
+      })
     });
-  }catch(e){}
+  }catch(e){
+    /* If the request fails, we silently ignore to avoid crashing the UI */
+  }
 }
 
-// NEW: wrapper that starts timer immediately when we issue START commands
+/*
+  sendRobotCommandAndMaybeStartTimer(robotName, cmd):
+  - wrapper around sendRobotCommand()
+  - if the command includes "START", we reset+start the timer immediately
+  - this fixes cases where a robot (like BDP) doesn't print "Started the race"
+*/
 async function sendRobotCommandAndMaybeStartTimer(robotName, cmd){
-  // If we're starting a robot, reset+start timer right away (fixes BDP not sending "Started the race")
+  /* Only do special timer logic if cmd is a string */
   if(typeof cmd === "string" && cmd.toUpperCase().includes("START")){
+    /* Only start a timer if we know this robot key exists in timers */
     if(timers[robotName]){
       resetAndStartTimer(robotName);
     }
   }
+
+  /* Actually send the command to the server */
   await sendRobotCommand(robotName, cmd);
 }
 
-// ----- Relay logic -----
+/* -------------------------------------------------------------------------- */
+/* 16) RELAY LOGIC: automatically start next robot after previous finishes      */
+/* -------------------------------------------------------------------------- */
+
+/*
+  finished(slotName):
+  - checks if that robot’s cached text shows "race finished"
+  - used by relayTick()
+*/
 function finished(slotName){
-  const raw = (cache[slotName].raw||"").toLowerCase();
-  const action = (cache[slotName].action||"").toLowerCase();
+  const raw = (cache[slotName].raw || "").toLowerCase();
+  const action = (cache[slotName].action || "").toLowerCase();
   return raw.includes("race finished") || action.includes("race finished");
 }
 
+/*
+  relayTick():
+  - runs each time we fetch robots
+  - if relay is enabled, it checks:
+      “Has the current watched robot finished?”
+    If yes, it starts the next robot (after a cooldown).
+*/
 async function relayTick(){
+  /* If relay mode is OFF, do nothing */
   if(!relayEnabled) return;
 
+  /* Get the current relay step object */
   const step = RELAY[relayStep];
-  if(!step){ relayEnabled=false; setRelayBtn(); setRelayText("Relay: done ✅"); return; }
 
+  /* If no step exists, stop relay */
+  if(!step){
+    relayEnabled = false;
+    setRelayBtn();
+    setRelayText("Relay: done ✅");
+    return;
+  }
+
+  /* If watched robot has not finished yet, keep waiting */
   if(!finished(step.watch)){
     setRelayText(`Relay: watching ${step.watch}…`);
     return;
   }
 
+  /* If there is no next robot, we are done */
   if(!step.nextName){
-    relayEnabled=false; setRelayBtn(); setRelayText("Relay: done ✅");
+    relayEnabled = false;
+    setRelayBtn();
+    setRelayText("Relay: done ✅");
     return;
   }
 
-  const now=Date.now();
-  if(now-lastRelaySentAt < RELAY_COOLDOWN_MS){
+  /* Cooldown check: prevent sending commands too fast */
+  const now = Date.now();
+  if(now - lastRelaySentAt < RELAY_COOLDOWN_MS){
     setRelayText(`Relay: ${step.watch} finished • cooldown…`);
     return;
   }
 
-  lastRelaySentAt=now;
+  /* Record when we send the command */
+  lastRelaySentAt = now;
+
+  /* Update the relay text for the user */
   setRelayText(`Relay: ${step.watch} finished • sending ${step.cmd} → ${step.nextName}`);
 
-  // IMPORTANT: use wrapper so next robot timer always starts even if robot doesn't print "Started the race"
+  /*
+    Send the command AND start the timer right away
+    (important for robots that don't print "Started the race")
+  */
   await sendRobotCommandAndMaybeStartTimer(step.nextName, step.cmd);
 
+  /* Move to the next relay step */
   relayStep++;
 }
 
-// ----- Rendering -----
+/* -------------------------------------------------------------------------- */
+/* 17) RENDERING: build the robot cards (HTML as a string)                      */
+/* -------------------------------------------------------------------------- */
+
+/*
+  cardHTML(slotName, apiRobot, big):
+  - slotName: fixed name (ex: "BDP")
+  - apiRobot: the robot object returned by the API for this slot
+  - big: true = big card view (includes On button)
+  Returns a chunk of HTML as a string.
+*/
 function cardHTML(slotName, apiRobot, big){
+  /* Parse telemetry from the robot’s last_data text */
   const parsed = parseTelemetry(apiRobot.last_data);
 
+  /* Update cache so values persist even if next poll misses info */
   if(parsed.raw) cache[slotName].raw = parsed.raw;
   if(parsed.action && parsed.action !== "No data") cache[slotName].action = parsed.action;
   if(parsed.speed !== null) cache[slotName].speed = parsed.speed;
 
+  /* Save last seen time if we got one */
   const seen = safeDate(apiRobot.last_seen);
   if(seen) cache[slotName].seen = seen;
 
+  /* Determine whether robot is offline */
   const offline = isOffline(slotName);
+
+  /* Decide what "action" string we treat as current */
   const action = offline ? "Offline" : cache[slotName].action;
+
+  /* Decide colors/styles for the car SVG */
   const st = statusStyle(action, offline);
 
+  /* What speed do we show? */
   const speed = offline ? "-" : cache[slotName].speed;
-  const raw   = offline ? "" : cache[slotName].raw;
+
+  /* Raw message text (empty if offline) */
+  const raw = offline ? "" : cache[slotName].raw;
+
+  /* Human readable “seen time” */
   const seenStr = cache[slotName].seen ? cache[slotName].seen.toLocaleTimeString() : "-";
 
+  /* Update timer state using the current message (only if online) */
   if(!offline){
     updateTimerState(slotName, action, raw);
   }
 
+  /* Get timer text + flags (running / done) */
   const tDisp = getTimerDisplay(slotName);
 
+  /*
+    Return a big HTML string.
+    This HTML becomes the robot “card” on screen.
+  */
   return `
-    <div class="${big?'robot-card-big':'robot-card'}" data-key="${slotName}" tabindex="0">
+    <div class="${big ? 'robot-card-big' : 'robot-card'}" data-key="${slotName}" tabindex="0">
+      <!-- Robot name at the top -->
       <div class="robot-title">${slotName}</div>
 
+      <!-- The “car” is just an SVG drawing -->
       <svg class="tesla-car-svg" viewBox="0 0 180 86">
+        <!-- Shadow under the car -->
         <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
+        <!-- Dark base layer -->
         <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
+        <!-- Main car color changes based on status -->
         <rect x="30" y="42" width="120" height="19" rx="9" fill="${st.fill}"/>
+        <!-- Glass -->
         <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${st.glass}" fill-opacity="0.72"/>
+        <!-- Wheels -->
         <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
         <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+        <!-- Headlights / lights -->
         <ellipse cx="31" cy="53" rx="4" ry="2" fill="${st.lights}" />
         <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
       </svg>
 
+      <!-- Status box shows an animated direction icon (arrow, pause, flag, etc.) -->
       <div class="status-box ${st.status}">
         <span class="dir ${directionClass(action, raw)}" aria-label="${action}"></span>
       </div>
 
+      <!-- Metrics section shows speed and timer -->
       <div class="metrics">
+        <!-- Speed line -->
         <div class="metric-line"><b>Speed:</b> ${speed}</div>
 
+        <!-- Timer line (label + value) -->
         <div class="metric-line timer-line">
           <b>${tDisp.label}</b>
-          <span class="timer-value ${tDisp.running ? 'timer-running' : ''} ${tDisp.done ? 'timer-done' : ''}"
+
+          <!-- timer-value span is updated smoothly by tickTimers() -->
+          <span class="timer-value
+                       ${tDisp.running ? 'timer-running' : ''}
+                       ${tDisp.done ? 'timer-done' : ''}"
                 data-timer="${slotName}">
             ${tDisp.value}
           </span>
         </div>
 
+        <!-- Last seen time -->
         <div class="muted">Seen: ${seenStr}</div>
+
+        <!-- Raw message shown at the bottom -->
         <div class="raw">${raw}</div>
       </div>
 
+      <!-- If this is the big focused card, show the On button -->
       ${big ? `
         <div id="focus-controls">
           <button class="control-btn"
@@ -348,45 +748,99 @@ function cardHTML(slotName, apiRobot, big){
   `;
 }
 
+/* -------------------------------------------------------------------------- */
+/* 18) CLICK BINDING: make the cards clickable (select/unselect)               */
+/* -------------------------------------------------------------------------- */
+
+/*
+  bindCardClicks():
+  - After we inject new HTML, we must attach click handlers again
+  - Because we replace innerHTML, old event listeners disappear
+*/
 function bindCardClicks(){
-  document.querySelectorAll(".robot-card, .robot-card-big").forEach(el=>{
-    const k=el.getAttribute("data-key");
-    el.onclick = ()=>{ focus = (focus===k)?null:k; render(); };
-    el.onkeyup = (e)=>{ if(e.key==="Enter"){ focus=(focus===k)?null:k; render(); } };
+  document.querySelectorAll(".robot-card, .robot-card-big").forEach(el => {
+    /* k is the robot name stored in data-key attribute */
+    const k = el.getAttribute("data-key");
+
+    /* When you click a card: toggle focus */
+    el.onclick = () => {
+      focus = (focus === k) ? null : k; /* click same card again -> unselect */
+      render();                         /* re-draw UI */
+    };
+
+    /* Also allow keyboard Enter to select cards */
+    el.onkeyup = (e) => {
+      if(e.key === "Enter"){
+        focus = (focus === k) ? null : k;
+        render();
+      }
+    };
   });
 }
 
+/* -------------------------------------------------------------------------- */
+/* 19) RENDER: decide layout (3 cards OR 1 big + 2 small)                      */
+/* -------------------------------------------------------------------------- */
+
+/*
+  render():
+  - If focus is set: show 1 big card + 2 smaller cards on the side
+  - If focus is null: show all 3 normal cards
+*/
 function render(){
-  const dash=document.getElementById("dashboard-flex");
+  const dash = document.getElementById("dashboard-flex");
   if(!dash) return;
 
+  /* If a robot is focused, show big + sidebar */
   if(focus){
-    const big = allRobots.find(x=>x.slot===focus);
-    const minis = allRobots.filter(x=>x.slot!==focus);
+    /* big robot card = the one you clicked */
+    const big = allRobots.find(x => x.slot === focus);
 
+    /* minis = the other two robots */
+    const minis = allRobots.filter(x => x.slot !== focus);
+
+    /* Put big card first, then a sidebar container */
     dash.innerHTML = cardHTML(big.slot, big.data, true) + `<div id="sidebar-right"></div>`;
-    const side=document.getElementById("sidebar-right");
-    minis.forEach(m=> side.innerHTML += cardHTML(m.slot, m.data, false));
-  }else{
-    dash.innerHTML = allRobots.map(x=>cardHTML(x.slot, x.data, false)).join("");
+
+    /* Put mini cards into the sidebar */
+    const side = document.getElementById("sidebar-right");
+    minis.forEach(m => side.innerHTML += cardHTML(m.slot, m.data, false));
+  }
+  else{
+    /* If no focus, show 3 normal cards */
+    dash.innerHTML = allRobots.map(x => cardHTML(x.slot, x.data, false)).join("");
   }
 
+  /* After changing innerHTML, we must attach click handlers again */
   bindCardClicks();
 }
 
-// Only update timer text nodes in-place (smooth timers, no click breaking)
+/* -------------------------------------------------------------------------- */
+/* 20) TIMER “SMOOTH” UPDATES: update only timer text every 100ms              */
+/* -------------------------------------------------------------------------- */
+
+/*
+  tickTimers():
+  - This updates the timer text without re-rendering the whole page.
+  - That way clicking stays stable and timers still look “live”.
+*/
 function tickTimers(){
-  ROBOTS.forEach(name=>{
+  ROBOTS.forEach(name => {
+    /* Find the timer span for this robot */
     const el = document.querySelector(`[data-timer="${name}"]`);
     if(!el) return;
 
+    /* Current timer object */
     const t = timers[name];
-    if(!t.started) {
+
+    /* If timer hasn't started, show placeholder and remove special classes */
+    if(!t.started){
       el.textContent = "--:--.--";
-      el.classList.remove("timer-running","timer-done");
+      el.classList.remove("timer-running", "timer-done");
       return;
     }
 
+    /* If timer finished, show final time and add “done” class */
     if(t.endMs !== null){
       el.textContent = formatMs(t.endMs - t.startMs);
       el.classList.remove("timer-running");
@@ -394,47 +848,94 @@ function tickTimers(){
       return;
     }
 
+    /* Otherwise, timer is running: show live time and “running” class */
     el.textContent = formatMs(Date.now() - t.startMs);
     el.classList.add("timer-running");
     el.classList.remove("timer-done");
   });
 }
 
-// ----- Main loop: fetch API -> update UI -> relay tick -----
+/* -------------------------------------------------------------------------- */
+/* 21) FETCH LOOP: call API, update UI, run relay logic                         */
+/* -------------------------------------------------------------------------- */
+
+/*
+  fetchRobots():
+  - calls GET /api/robots
+  - normalizes + matches robots
+  - renders UI
+  - runs relayTick() if relay mode is enabled
+*/
 async function fetchRobots(){
   try{
+    /* Fetch robot data; cache:no-store avoids the browser caching it */
     const res = await fetch("/api/robots", { cache:"no-store" });
+
+    /* Parse JSON response */
     const payload = await res.json();
+
+    /* Convert payload into an array in a safe consistent format */
     const arr = normalizePayload(payload);
 
-    allRobots = ROBOTS.map(name => ({ slot:name, data: matchRobot(name, arr) }));
+    /* Build the display list in the same order as ROBOTS */
+    allRobots = ROBOTS.map(name => ({
+      slot: name,                 /* fixed slot name */
+      data: matchRobot(name, arr) /* best matching API object */
+    }));
 
+    /* Update top info line with current time */
     setTop(`Live • last update ${new Date().toLocaleTimeString()}`);
+
+    /* Draw the cards */
     render();
+
+    /* Run relay logic (may start the next robot) */
     await relayTick();
   }catch(e){
+    /* If anything fails (server down, network issue), show a message */
     setTop("Disconnected • retrying…");
   }
 }
 
-// ----- Buttons -----
-document.getElementById("relayBtn").onclick = ()=>{
+/* -------------------------------------------------------------------------- */
+/* 22) BUTTON EVENTS: handle relay mode toggle                                 */
+/* -------------------------------------------------------------------------- */
+
+/* When the relay button is clicked, toggle relay mode on/off */
+document.getElementById("relayBtn").onclick = () => {
+  /* Flip the boolean */
   relayEnabled = !relayEnabled;
+
+  /* If we just turned relay ON, reset relay counters */
   if(relayEnabled){
-    relayStep=0;
-    lastRelaySentAt=0;
+    relayStep = 0;          /* start at step 0 */
+    lastRelaySentAt = 0;    /* allow immediate send once finished */
     setRelayText("Relay: watching Pink Panther…");
   }else{
+    /* If relay is OFF, show idle */
     setRelayText("Relay: idle");
   }
+
+  /* Update button label */
   setRelayBtn();
 };
 
-// Start everything
+/* -------------------------------------------------------------------------- */
+/* 23) STARTUP: run once, then set repeating intervals                         */
+/* -------------------------------------------------------------------------- */
+
+/* Make sure relay button label matches initial relayEnabled state */
 setRelayBtn();
+
+/* Fetch once immediately when page loads */
 fetchRobots();
+
+/* Fetch robots repeatedly every 800ms (0.8 seconds) */
 setInterval(fetchRobots, 800);
+
+/* Update timers smoothly every 100ms */
 setInterval(tickTimers, 100);
+
 </script>
 </body>
 </html>
