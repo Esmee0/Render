@@ -1,1 +1,263 @@
 
+/* static/styles.css */
+
+body {
+  background: #181a1d;
+  color: #eee;
+  font-family: 'Segoe UI', 'Roboto', sans-serif;
+  min-height: 100vh;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+h1 {
+  margin: 2.2rem 0 0.4rem 0;
+  color: #3ed6fa;
+  font-size: 2.3rem;
+  letter-spacing: 0.02em;
+  font-weight: 700;
+  text-shadow: 0 6px 30px #000a;
+}
+
+#top-info {
+  margin-top: 0.2rem;
+  color: #a7b2c3;
+  font-size: 0.95rem;
+  text-align: center;
+}
+
+#controls {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.pill {
+  background: #121418;
+  border: 1px solid #2a3340;
+  border-radius: 999px;
+  padding: 0.45rem 0.85rem;
+  color: #c7d0dd;
+  font-size: 0.92rem;
+}
+
+.btn {
+  border: none;
+  border-radius: 999px;
+  padding: 0.6rem 1.05rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: filter 0.1s;
+}
+
+.btn:active {
+  filter: brightness(0.92);
+}
+
+.btn-auto {
+  background: linear-gradient(92deg, #2af8ff 20%, #48d6be 90%);
+  color: #0e2d3f;
+  box-shadow: 0 2px 12px #11eae745;
+}
+
+.btn-stop {
+  background: linear-gradient(92deg, #ff4848 30%, #ffd700 95%);
+  color: #251f00;
+  box-shadow: 0 2px 12px #ff48482a;
+}
+
+#dashboard-flex {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2.5rem;
+  width: 100vw;
+  max-width: 1200px;
+  margin-top: 2.2rem;
+}
+
+.robot-card,
+.robot-card-big {
+  background: #23252d;
+  border-radius: 1.6rem;
+  box-shadow: 0 6px 30px #007abba1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0;
+  transition: box-shadow 0.13s, transform 0.18s, filter 0.11s;
+  border: 2.5px solid transparent;
+  cursor: pointer;
+}
+
+.robot-card {
+  min-width: 230px;
+  max-width: 340px;
+  padding: 2rem 2.2rem 2.1rem 2.2rem;
+}
+
+.robot-card-big {
+  min-width: 370px;
+  max-width: 440px;
+  padding: 2.7rem 3rem 2.6rem 3rem;
+  z-index: 2;
+  box-shadow: 0 14px 60px #0bfdfe41;
+}
+
+.robot-card:hover,
+.robot-card-big:hover {
+  border: 2.5px solid #2af8ff;
+  filter: brightness(1.07);
+}
+
+.robot-card.selected {
+  border: 2.5px solid #2af8ff;
+  filter: brightness(1.14);
+}
+
+.tesla-car-svg {
+  width: 160px;
+  height: 76px;
+  margin-bottom: 1.09rem;
+}
+
+.robot-card-big .tesla-car-svg {
+  width: 220px;
+  height: 106px;
+  margin-bottom: 1.6rem;
+}
+
+.robot-title {
+  color: #32e6ff;
+  margin-bottom: 0.38em;
+  font-weight: 600;
+  font-size: 1.18em;
+  text-align: center;
+}
+
+.robot-card-big .robot-title {
+  font-size: 1.46em;
+}
+
+.status-box {
+  text-align: center;
+  margin: 0.8rem 0 0 0;
+  font-size: 1.09rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  min-height: 1.8em;
+}
+
+.status-box.obstacle {
+  color: #ff4848;
+}
+
+.status-box.moving {
+  color: #39ffb2;
+}
+
+.status-box.waiting {
+  color: #ffd700;
+}
+
+.status-box.offline {
+  color: #8f96a7;
+}
+
+.status-box.finished {
+  color: #c7a6ff;
+}
+
+.metrics {
+  margin-top: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  text-align: center;
+  color: #95d5e7;
+  font-size: 0.98rem;
+  min-height: 4.2rem;
+  width: 100%;
+}
+
+.metric-line b {
+  color: #b1efff;
+  font-weight: 700;
+}
+
+.muted {
+  color: #8f96a7;
+  font-size: 0.9rem;
+  margin-top: 0.15rem;
+}
+
+.raw {
+  margin-top: 0.45rem;
+  color: #c7d0dd;
+  font-size: 0.85rem;
+  opacity: 0.92;
+  word-break: break-word;
+  min-height: 1.1rem;
+}
+
+#focus-controls {
+  margin-top: 1.1em;
+  display: flex;
+  flex-direction: row;
+  gap: 1.2em;
+  justify-content: center;
+}
+
+.control-btn {
+  background: linear-gradient(92deg, #2af8ff 20%, #48d6be 90%);
+  color: #0e2d3f;
+  font-size: 1.09em;
+  padding: 0.56em 1.5em;
+  border: none;
+  border-radius: 0.88em;
+  font-weight: 800;
+  cursor: pointer;
+  transition: filter 0.09s;
+  box-shadow: 0 2px 12px #11eae745;
+}
+
+.control-btn.off {
+  background: linear-gradient(92deg, #ff4848 30%, #ffd700 95%);
+  color: #251f00;
+}
+
+.control-btn:active {
+  filter: brightness(0.91);
+}
+
+#sidebar-right {
+  display: flex;
+  flex-direction: column;
+  gap: 1.7rem;
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  #dashboard-flex {
+    flex-direction: column;
+    align-items: center;
+    gap: 2rem;
+  }
+
+  #sidebar-right {
+    flex-direction: row;
+    gap: 1.3rem;
+  }
+
+  .robot-card,
+  .robot-card-big {
+    min-width: 80vw;
+    max-width: 99vw;
+  }
+}
