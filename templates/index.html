@@ -180,7 +180,6 @@ async function sendRobotCommand(robotName, cmd){
 function shouldStartTimer(action, raw){
   const a=(action||"").toLowerCase();
   const r=(raw||"").toLowerCase();
-  // start timing if we see any "started the race" signal (or raw contains it)
   return a.includes("started race") || r.includes("started the race");
 }
 
@@ -193,14 +192,12 @@ function shouldStopTimer(action, raw){
 function updateTimerState(slotName, action, raw){
   const t = timers[slotName];
 
-  // Start (only once)
   if(!t.started && shouldStartTimer(action, raw)){
     t.started = true;
     t.startMs = Date.now();
     t.endMs = null;
   }
 
-  // Stop (only once) — only if it already started
   if(t.started && t.endMs === null && shouldStopTimer(action, raw)){
     t.endMs = Date.now();
   }
@@ -266,7 +263,6 @@ async function relayTick(){
 function cardHTML(slotName, apiRobot, big){
   const parsed = parseTelemetry(apiRobot.last_data);
 
-  // Update cache (keeps values stable)
   if(parsed.raw) cache[slotName].raw = parsed.raw;
   if(parsed.action && parsed.action !== "No data") cache[slotName].action = parsed.action;
   if(parsed.speed !== null) cache[slotName].speed = parsed.speed;
@@ -282,7 +278,6 @@ function cardHTML(slotName, apiRobot, big){
   const raw   = offline ? "" : cache[slotName].raw;
   const seenStr = cache[slotName].seen ? cache[slotName].seen.toLocaleTimeString() : "-";
 
-  // Update timer state based on the latest message we have for this robot
   if(!offline){
     updateTimerState(slotName, action, raw);
   }
@@ -313,7 +308,8 @@ function cardHTML(slotName, apiRobot, big){
 
         <div class="metric-line timer-line">
           <b>${tDisp.label}</b>
-          <span class="timer-value ${tDisp.running ? 'timer-running' : ''} ${tDisp.done ? 'timer-done' : ''}">
+          <span class="timer-value ${tDisp.running ? 'timer-running' : ''} ${tDisp.done ? 'timer-done' : ''}"
+                data-timer="${slotName}">
             ${tDisp.value}
           </span>
         </div>
@@ -331,6 +327,14 @@ function cardHTML(slotName, apiRobot, big){
   `;
 }
 
+function bindCardClicks(){
+  document.querySelectorAll(".robot-card, .robot-card-big").forEach(el=>{
+    const k=el.getAttribute("data-key");
+    el.onclick = ()=>{ focus = (focus===k)?null:k; render(); };
+    el.onkeyup = (e)=>{ if(e.key==="Enter"){ focus=(focus===k)?null:k; render(); } };
+  });
+}
+
 function render(){
   const dash=document.getElementById("dashboard-flex");
   if(!dash) return;
@@ -342,19 +346,39 @@ function render(){
     dash.innerHTML = cardHTML(big.slot, big.data, true) + `<div id="sidebar-right"></div>`;
     const side=document.getElementById("sidebar-right");
     minis.forEach(m=> side.innerHTML += cardHTML(m.slot, m.data, false));
-
-    document.querySelectorAll(".robot-card, .robot-card-big").forEach(el=>{
-      const k=el.getAttribute("data-key");
-      el.onclick = ()=>{ focus = (focus===k)?null:k; render(); };
-      el.onkeyup = (e)=>{ if(e.key==="Enter"){ focus=(focus===k)?null:k; render(); } };
-    });
   }else{
     dash.innerHTML = allRobots.map(x=>cardHTML(x.slot, x.data, false)).join("");
-    document.querySelectorAll(".robot-card").forEach(el=>{
-      el.onclick=()=>{ focus=el.getAttribute("data-key"); render(); };
-      el.onkeyup=(e)=>{ if(e.key==="Enter"){ focus=el.getAttribute("data-key"); render(); } };
-    });
   }
+
+  // ✅ Always re-bind click handlers after we replace innerHTML
+  bindCardClicks();
+}
+
+// ✅ Instead of re-rendering everything every 100ms,
+// only update the timer text spans that already exist.
+function tickTimers(){
+  ROBOTS.forEach(name=>{
+    const el = document.querySelector(`[data-timer="${name}"]`);
+    if(!el) return;
+
+    const t = timers[name];
+    if(!t.started) {
+      el.textContent = "--:--.--";
+      el.classList.remove("timer-running","timer-done");
+      return;
+    }
+
+    if(t.endMs !== null){
+      el.textContent = formatMs(t.endMs - t.startMs);
+      el.classList.remove("timer-running");
+      el.classList.add("timer-done");
+      return;
+    }
+
+    el.textContent = formatMs(Date.now() - t.startMs);
+    el.classList.add("timer-running");
+    el.classList.remove("timer-done");
+  });
 }
 
 // ----- Main loop: fetch API -> update UI -> relay tick -----
@@ -374,9 +398,6 @@ async function fetchRobots(){
   }
 }
 
-// Make the timers visually update smoothly between polls
-setInterval(()=>{ if(allRobots.length) render(); }, 100);
-
 // ----- Buttons -----
 document.getElementById("relayBtn").onclick = ()=>{
   relayEnabled = !relayEnabled;
@@ -394,6 +415,7 @@ document.getElementById("relayBtn").onclick = ()=>{
 setRelayBtn();
 fetchRobots();
 setInterval(fetchRobots, 800);
+setInterval(tickTimers, 100);  // ✅ smooth timers without breaking clicking
 </script>
 </body>
 </html>
