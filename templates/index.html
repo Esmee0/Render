@@ -160,6 +160,22 @@ function statusStyle(action, offline){
   return { status:"moving", fill:"#23bffe", glass:"#fff", lights:"#fffbe0" };
 }
 
+// NEW: pick arrow direction based on action/raw text
+function directionClass(action, raw){
+  const a = (action || "").toLowerCase();
+  const r = (raw || "").toLowerCase();
+
+  if (a.includes("finished")) return "dir-finish";
+  if (a.includes("offline")) return "dir-offline";
+  if (a.includes("wait")) return "dir-wait";
+  if (a.includes("obstacle")) return "dir-obstacle";
+
+  if (a.includes("turning left") || r.includes("left")) return "dir-left";
+  if (a.includes("turning right") || r.includes("right")) return "dir-right";
+
+  return "dir-forward";
+}
+
 // Send command to Render, which forwards to your laptop API
 async function sendRobotCommand(robotName, cmd){
   try{
@@ -246,7 +262,10 @@ function cardHTML(slotName, apiRobot, big){
         <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
       </svg>
 
-      <div class="status-box ${st.status}">${action}</div>
+      <!-- REPLACED: text action -> animated direction icon -->
+      <div class="status-box ${st.status}">
+        <span class="dir ${directionClass(action, raw)}" aria-label="${action}"></span>
+      </div>
 
       <div class="metrics">
         <div class="metric-line"><b>Speed:</b> ${speed}</div>
