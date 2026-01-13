@@ -24,10 +24,6 @@
   - Relay Mode:
       Pink Panther finishes -> send START_R2
       James Bond finishes   -> send START_R3
-  - We removed:
-      - Stop All button
-      - OFF button
-      - Distance metric
   - Added:
       - Per-robot timer that starts when robot "starts" and stops on "Race Finished"
 */
@@ -166,16 +162,6 @@ function directionClass(action, raw){
   return "dir-forward";
 }
 
-async function sendRobotCommand(robotName, cmd){
-  try{
-    await fetch("/api/command", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ robot_id: robotName, command: cmd })
-    });
-  }catch(e){}
-}
-
 // ----- Timer helpers -----
 function shouldStartTimer(action, raw){
   const a=(action||"").toLowerCase();
@@ -189,15 +175,22 @@ function shouldStopTimer(action, raw){
   return a.includes("race finished") || r.includes("race finished");
 }
 
+function resetAndStartTimer(slotName){
+  const t = timers[slotName];
+  t.started = true;
+  t.startMs = Date.now();
+  t.endMs = null;
+}
+
 function updateTimerState(slotName, action, raw){
   const t = timers[slotName];
 
+  // If robot sends a "started the race" style message, start timer if not running yet
   if(!t.started && shouldStartTimer(action, raw)){
-    t.started = true;
-    t.startMs = Date.now();
-    t.endMs = null;
+    resetAndStartTimer(slotName);
   }
 
+  // Stop timer when it finishes (only if running and not already stopped)
   if(t.started && t.endMs === null && shouldStopTimer(action, raw)){
     t.endMs = Date.now();
   }
@@ -222,6 +215,28 @@ function getTimerDisplay(slotName){
     return { label:"Time:", value: formatMs(t.endMs - t.startMs), running:false, done:true };
   }
   return { label:"Time:", value: formatMs(Date.now() - t.startMs), running:true, done:false };
+}
+
+// Send command to Render, which forwards to your laptop API
+async function sendRobotCommand(robotName, cmd){
+  try{
+    await fetch("/api/command", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ robot_id: robotName, command: cmd })
+    });
+  }catch(e){}
+}
+
+// NEW: wrapper that starts timer immediately when we issue START commands
+async function sendRobotCommandAndMaybeStartTimer(robotName, cmd){
+  // If we're starting a robot, reset+start timer right away (fixes BDP not sending "Started the race")
+  if(typeof cmd === "string" && cmd.toUpperCase().includes("START")){
+    if(timers[robotName]){
+      resetAndStartTimer(robotName);
+    }
+  }
+  await sendRobotCommand(robotName, cmd);
 }
 
 // ----- Relay logic -----
@@ -255,7 +270,10 @@ async function relayTick(){
 
   lastRelaySentAt=now;
   setRelayText(`Relay: ${step.watch} finished • sending ${step.cmd} → ${step.nextName}`);
-  await sendRobotCommand(step.nextName, step.cmd);
+
+  // IMPORTANT: use wrapper so next robot timer always starts even if robot doesn't print "Started the race"
+  await sendRobotCommandAndMaybeStartTimer(step.nextName, step.cmd);
+
   relayStep++;
 }
 
@@ -320,7 +338,10 @@ function cardHTML(slotName, apiRobot, big){
 
       ${big ? `
         <div id="focus-controls">
-          <button class="control-btn" onclick="sendRobotCommand('${slotName}','START');event.stopPropagation();">&#9654; On</button>
+          <button class="control-btn"
+            onclick="sendRobotCommandAndMaybeStartTimer('${slotName}','START');event.stopPropagation();">
+            &#9654; On
+          </button>
         </div>
       ` : ""}
     </div>
@@ -350,12 +371,10 @@ function render(){
     dash.innerHTML = allRobots.map(x=>cardHTML(x.slot, x.data, false)).join("");
   }
 
-  // ✅ Always re-bind click handlers after we replace innerHTML
   bindCardClicks();
 }
 
-// ✅ Instead of re-rendering everything every 100ms,
-// only update the timer text spans that already exist.
+// Only update timer text nodes in-place (smooth timers, no click breaking)
 function tickTimers(){
   ROBOTS.forEach(name=>{
     const el = document.querySelector(`[data-timer="${name}"]`);
@@ -415,7 +434,7 @@ document.getElementById("relayBtn").onclick = ()=>{
 setRelayBtn();
 fetchRobots();
 setInterval(fetchRobots, 800);
-setInterval(tickTimers, 100);  // ✅ smooth timers without breaking clicking
+setInterval(tickTimers, 100);
 </script>
 </body>
 </html>
