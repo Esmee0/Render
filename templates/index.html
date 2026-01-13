@@ -13,25 +13,23 @@
   <div id="controls">
     <div id="relayState" class="pill">Relay: idle</div>
     <button id="relayBtn" class="btn btn-auto">▶ Relay Mode: OFF</button>
-    <button id="stopAllBtn" class="btn btn-stop">■ Stop All</button>
   </div>
 
   <div id="dashboard-flex"></div>
 
 <script>
 /*
-  SIMPLE EXPLANATION:
-
-  - The website calls GET /api/robots every ~0.8s.
-  - We show 3 cards: Pink Panther, James Bond, BDP.
-  - We read the latest message text (last_data) to show:
-      action, speed, distance
+  - Polls /api/robots every ~0.8s
+  - Shows 3 robot cards
   - Relay Mode:
-      Pink Panther starts by itself.
-      When Pink Panther says "Race Finished" -> send START_R2 to James Bond.
-      When James Bond says "Race Finished" -> send START_R3 to BDP.
-  - Manual buttons still work:
-      START and STOP go to the robot you click.
+      Pink Panther finishes -> send START_R2
+      James Bond finishes   -> send START_R3
+  - We removed:
+      - Stop All button
+      - OFF button
+      - Distance metric
+  - Added:
+      - Per-robot timer that starts when robot "starts" and stops on "Race Finished"
 */
 
 // ----- Fixed robot “slots” shown on screen -----
@@ -52,18 +50,25 @@ const RELAY = [
 ];
 
 // ----- UI state -----
-let focus = null;                 // clicked robot card (big view)
-let allRobots = [];               // always 3 items
+let focus = null;
+let allRobots = [];
 let relayEnabled = false;
 let relayStep = 0;
 let lastRelaySentAt = 0;
 const RELAY_COOLDOWN_MS = 2500;
 
-// We keep last known values so speed/distance don’t “disappear”
+// We keep last known values so speed doesn’t “disappear”
 const cache = {
-  "Pink Panther": { action:"No data", speed:"-", distance:"-", raw:"", seen:null },
-  "James Bond":   { action:"No data", speed:"-", distance:"-", raw:"", seen:null },
-  "BDP":          { action:"No data", speed:"-", distance:"-", raw:"", seen:null }
+  "Pink Panther": { action:"No data", speed:"-", raw:"", seen:null },
+  "James Bond":   { action:"No data", speed:"-", raw:"", seen:null },
+  "BDP":          { action:"No data", speed:"-", raw:"", seen:null }
+};
+
+// ----- Timer state (per robot) -----
+const timers = {
+  "Pink Panther": { started:false, startMs:null, endMs:null },
+  "James Bond":   { started:false, startMs:null, endMs:null },
+  "BDP":          { started:false, startMs:null, endMs:null }
 };
 
 // ----- Small helpers -----
@@ -75,7 +80,6 @@ function safeDate(x){
   if(!x) return null;
   let d=new Date(x);
   if(!isNaN(d.getTime())) return d;
-  // handle "YYYY-MM-DD HH:MM:SS" by converting space -> T
   if(typeof x==="string" && x.includes(" ") && !x.includes("T")){
     d=new Date(x.replace(" ","T"));
     if(!isNaN(d.getTime())) return d;
@@ -84,9 +88,6 @@ function safeDate(x){
 }
 
 function normalizePayload(p){
-  // API can return:
-  // - list of robots [{robot_id,...}]
-  // - dict {"R1":"...","R2":"..."}
   if(Array.isArray(p)) return p;
 
   if(p && typeof p === "object"){
@@ -99,25 +100,20 @@ function normalizePayload(p){
   return [];
 }
 
-// Find the best matching object from API for each robot slot
 function matchRobot(slotName, robotsArr){
   const a = ALIASES[slotName];
   const lower = a.map(x=>x.toLowerCase());
 
-  // match by robot_id or robot_name
   let r = robotsArr.find(x => lower.includes(String(x.robot_id||"").toLowerCase()))
        || robotsArr.find(x => lower.includes(String(x.robot_name||"").toLowerCase()));
 
-  // if not found, return empty object for that slot
   return r || { robot_id: slotName, robot_name: slotName, last_seen:null, ping_count:0, last_data:"" };
 }
 
-// Convert raw text into nice “action”, and extract speed/distance if present
 function parseTelemetry(text){
   const raw = (text||"").toString().trim();
   const L = raw.toLowerCase();
 
-  // pick a simple action label
   let action = "No data";
   if(L.includes("race finished")) action="Race Finished";
   else if(L.includes("dropping cone")) action="Dropping Cone";
@@ -131,19 +127,14 @@ function parseTelemetry(text){
   else if(L.includes("motor speed")) action="Moving";
   else if(raw.length) action=raw;
 
-  // extract numbers if they exist
-  let speed=null, dist=null;
+  let speed=null;
   const m=raw.match(/motor\s*speed\s*:\s*([0-9.]+)/i);
   if(m) speed=m[1];
-  const d=raw.match(/distance\s*:\s*([0-9.]+)/i);
-  if(d) dist=d[1];
 
-  return { action, speed, dist, raw };
+  return { action, speed, raw };
 }
 
 function isOffline(slotName){
-  // If we have any real message, we treat it as online.
-  // Also: if last_seen is older than 10s, treat as offline.
   const seen = cache[slotName].seen;
   const raw = (cache[slotName].raw||"").trim().toLowerCase();
   if(raw && raw !== "no data") return false;
@@ -160,7 +151,6 @@ function statusStyle(action, offline){
   return { status:"moving", fill:"#23bffe", glass:"#fff", lights:"#fffbe0" };
 }
 
-// NEW: pick arrow direction based on action/raw text
 function directionClass(action, raw){
   const a = (action || "").toLowerCase();
   const r = (raw || "").toLowerCase();
@@ -176,7 +166,6 @@ function directionClass(action, raw){
   return "dir-forward";
 }
 
-// Send command to Render, which forwards to your laptop API
 async function sendRobotCommand(robotName, cmd){
   try{
     await fetch("/api/command", {
@@ -185,6 +174,57 @@ async function sendRobotCommand(robotName, cmd){
       body: JSON.stringify({ robot_id: robotName, command: cmd })
     });
   }catch(e){}
+}
+
+// ----- Timer helpers -----
+function shouldStartTimer(action, raw){
+  const a=(action||"").toLowerCase();
+  const r=(raw||"").toLowerCase();
+  // start timing if we see any "started the race" signal (or raw contains it)
+  return a.includes("started race") || r.includes("started the race");
+}
+
+function shouldStopTimer(action, raw){
+  const a=(action||"").toLowerCase();
+  const r=(raw||"").toLowerCase();
+  return a.includes("race finished") || r.includes("race finished");
+}
+
+function updateTimerState(slotName, action, raw){
+  const t = timers[slotName];
+
+  // Start (only once)
+  if(!t.started && shouldStartTimer(action, raw)){
+    t.started = true;
+    t.startMs = Date.now();
+    t.endMs = null;
+  }
+
+  // Stop (only once) — only if it already started
+  if(t.started && t.endMs === null && shouldStopTimer(action, raw)){
+    t.endMs = Date.now();
+  }
+}
+
+function formatMs(ms){
+  if(ms === null || ms === undefined) return "--:--.--";
+  const total = Math.max(0, ms);
+  const minutes = Math.floor(total / 60000);
+  const seconds = Math.floor((total % 60000) / 1000);
+  const centis  = Math.floor((total % 1000) / 10);
+  const mm = String(minutes).padStart(2,'0');
+  const ss = String(seconds).padStart(2,'0');
+  const cc = String(centis).padStart(2,'0');
+  return `${mm}:${ss}.${cc}`;
+}
+
+function getTimerDisplay(slotName){
+  const t = timers[slotName];
+  if(!t.started) return { label:"Timer:", value:"--:--.--", running:false, done:false };
+  if(t.endMs !== null) {
+    return { label:"Time:", value: formatMs(t.endMs - t.startMs), running:false, done:true };
+  }
+  return { label:"Time:", value: formatMs(Date.now() - t.startMs), running:true, done:false };
 }
 
 // ----- Relay logic -----
@@ -200,19 +240,16 @@ async function relayTick(){
   const step = RELAY[relayStep];
   if(!step){ relayEnabled=false; setRelayBtn(); setRelayText("Relay: done ✅"); return; }
 
-  // Wait until the watched robot says "Race Finished"
   if(!finished(step.watch)){
     setRelayText(`Relay: watching ${step.watch}…`);
     return;
   }
 
-  // If there is no next robot, relay is done
   if(!step.nextName){
     relayEnabled=false; setRelayBtn(); setRelayText("Relay: done ✅");
     return;
   }
 
-  // Small cooldown so we don’t spam commands
   const now=Date.now();
   if(now-lastRelaySentAt < RELAY_COOLDOWN_MS){
     setRelayText(`Relay: ${step.watch} finished • cooldown…`);
@@ -227,13 +264,12 @@ async function relayTick(){
 
 // ----- Rendering -----
 function cardHTML(slotName, apiRobot, big){
-  const t = parseTelemetry(apiRobot.last_data);
+  const parsed = parseTelemetry(apiRobot.last_data);
 
-  // Update cache with new info (so speed/distance stays)
-  if(t.raw) cache[slotName].raw = t.raw;
-  if(t.action && t.action !== "No data") cache[slotName].action = t.action;
-  if(t.speed !== null) cache[slotName].speed = t.speed;
-  if(t.dist !== null) cache[slotName].distance = t.dist;
+  // Update cache (keeps values stable)
+  if(parsed.raw) cache[slotName].raw = parsed.raw;
+  if(parsed.action && parsed.action !== "No data") cache[slotName].action = parsed.action;
+  if(parsed.speed !== null) cache[slotName].speed = parsed.speed;
 
   const seen = safeDate(apiRobot.last_seen);
   if(seen) cache[slotName].seen = seen;
@@ -243,9 +279,15 @@ function cardHTML(slotName, apiRobot, big){
   const st = statusStyle(action, offline);
 
   const speed = offline ? "-" : cache[slotName].speed;
-  const dist  = offline ? "-" : cache[slotName].distance;
   const raw   = offline ? "" : cache[slotName].raw;
   const seenStr = cache[slotName].seen ? cache[slotName].seen.toLocaleTimeString() : "-";
+
+  // Update timer state based on the latest message we have for this robot
+  if(!offline){
+    updateTimerState(slotName, action, raw);
+  }
+
+  const tDisp = getTimerDisplay(slotName);
 
   return `
     <div class="${big?'robot-card-big':'robot-card'}" data-key="${slotName}" tabindex="0">
@@ -262,14 +304,20 @@ function cardHTML(slotName, apiRobot, big){
         <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
       </svg>
 
-      <!-- REPLACED: text action -> animated direction icon -->
       <div class="status-box ${st.status}">
         <span class="dir ${directionClass(action, raw)}" aria-label="${action}"></span>
       </div>
 
       <div class="metrics">
         <div class="metric-line"><b>Speed:</b> ${speed}</div>
-        <div class="metric-line"><b>Distance:</b> ${dist}</div>
+
+        <div class="metric-line timer-line">
+          <b>${tDisp.label}</b>
+          <span class="timer-value ${tDisp.running ? 'timer-running' : ''} ${tDisp.done ? 'timer-done' : ''}">
+            ${tDisp.value}
+          </span>
+        </div>
+
         <div class="muted">Seen: ${seenStr}</div>
         <div class="raw">${raw}</div>
       </div>
@@ -277,7 +325,6 @@ function cardHTML(slotName, apiRobot, big){
       ${big ? `
         <div id="focus-controls">
           <button class="control-btn" onclick="sendRobotCommand('${slotName}','START');event.stopPropagation();">&#9654; On</button>
-          <button class="control-btn off" onclick="sendRobotCommand('${slotName}','STOP');event.stopPropagation();">&#9632; Off</button>
         </div>
       ` : ""}
     </div>
@@ -327,6 +374,9 @@ async function fetchRobots(){
   }
 }
 
+// Make the timers visually update smoothly between polls
+setInterval(()=>{ if(allRobots.length) render(); }, 100);
+
 // ----- Buttons -----
 document.getElementById("relayBtn").onclick = ()=>{
   relayEnabled = !relayEnabled;
@@ -334,21 +384,10 @@ document.getElementById("relayBtn").onclick = ()=>{
     relayStep=0;
     lastRelaySentAt=0;
     setRelayText("Relay: watching Pink Panther…");
-    // IMPORTANT: we do NOT start Pink Panther automatically
   }else{
     setRelayText("Relay: idle");
   }
   setRelayBtn();
-};
-
-document.getElementById("stopAllBtn").onclick = async ()=>{
-  relayEnabled=false;
-  setRelayBtn();
-  setRelayText("Relay: stopped ■");
-  // Stop everyone (manual emergency)
-  await sendRobotCommand("Pink Panther","STOP");
-  await sendRobotCommand("James Bond","STOP");
-  await sendRobotCommand("BDP","STOP");
 };
 
 // Start everything
