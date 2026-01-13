@@ -25,20 +25,41 @@
       font-size: 0.95rem;
       text-align: center;
     }
-    #debug {
-      margin-top: 0.7rem;
-      max-width: 1100px;
-      width: calc(100vw - 60px);
+
+    #controls {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.9rem;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .pill {
       background: #121418;
       border: 1px solid #2a3340;
+      border-radius: 999px;
+      padding: 0.45rem 0.85rem;
       color: #c7d0dd;
-      border-radius: 12px;
-      padding: 10px 12px;
-      font-size: 12px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      display: none; /* set to block if you want to see JSON */
-      opacity: 0.95;
+      font-size: 0.92rem;
+    }
+    .btn {
+      border: none;
+      border-radius: 999px;
+      padding: 0.6rem 1.05rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: filter 0.1s;
+    }
+    .btn:active { filter: brightness(0.92); }
+    .btn-auto {
+      background: linear-gradient(92deg,#2af8ff 20%,#48d6be 90%);
+      color: #0e2d3f;
+      box-shadow: 0 2px 12px #11eae745;
+    }
+    .btn-stop {
+      background: linear-gradient(92deg,#ff4848 30%,#ffd700 95%);
+      color: #251f00;
+      box-shadow: 0 2px 12px #ff48482a;
     }
 
     #dashboard-flex {
@@ -85,6 +106,7 @@
     .status-box.moving   { color: #39ffb2; }
     .status-box.waiting  { color: #ffd700; }
     .status-box.offline  { color: #8f96a7; }
+    .status-box.finished { color: #c7a6ff; }
 
     .metrics {
       margin-top: 0.8rem;
@@ -111,12 +133,12 @@
 
     #focus-controls {
       margin-top: 1.1em;
-      display: flex; flex-direction: row; gap: 1.8em; justify-content: center;
+      display: flex; flex-direction: row; gap: 1.2em; justify-content: center;
     }
     .control-btn {
       background: linear-gradient(92deg,#2af8ff 20%,#48d6be 90%);
       color: #0e2d3f; font-size: 1.09em; padding: 0.56em 1.5em; border: none;
-      border-radius: 0.88em; font-weight: 700; margin: 0 0.33em;
+      border-radius: 0.88em; font-weight: 800;
       cursor: pointer; transition: filter 0.09s;
       box-shadow: 0 2px 12px #11eae745;
     }
@@ -144,271 +166,392 @@
 <body>
   <h1>Relayrobot Dashboard</h1>
   <div id="top-info">Connecting…</div>
-  <div id="debug"></div>
+
+  <div id="controls">
+    <button id="autoBtn" class="btn btn-auto">▶ Auto Race: OFF</button>
+    <button id="stopAllBtn" class="btn btn-stop">■ Stop All</button>
+    <div id="autoState" class="pill">Auto: idle</div>
+  </div>
+
   <div id="dashboard-flex"></div>
 
 <script>
-/*
-  This version FIXES the “nothing changes” issue by matching robots even if your API uses:
-  - robot_id: "R1"/"R2"/"R3"
-  - OR robot_id: "Pink Panther"/"James Bond"/"BDP"
-  - OR robot_name is the name, with robot_id being something else
-*/
+  // --- Slots (UI cards) ---
+  const slots = [
+    { key: "Pink Panther", aliases: ["Pink Panther","R1","Robot 1","1"] },
+    { key: "James Bond",   aliases: ["James Bond","R2","Robot 2","2"] },
+    { key: "BDP",          aliases: ["BDP","R3","Robot 3","3"] }
+  ];
 
-const slots = [
-  { key: "Pink Panther", aliases: ["Pink Panther","R1","Robot 1","1"] },
-  { key: "James Bond",   aliases: ["James Bond","R2","Robot 2","2"] },
-  { key: "BDP",          aliases: ["BDP","R3","Robot 3","3"] }
-];
+  // --- Auto sequence order ---
+  const sequence = ["Pink Panther", "James Bond", "BDP"];
 
-let allRobots = [];
-let focusRobotKey = null;
+  let allRobots = [];
+  let focusRobotKey = null;
 
-function safeDate(x) {
-  if (!x) return null;
-  const d = new Date(x);
-  if (!isNaN(d.getTime())) return d;
-  const n = Number(x);
-  if (!Number.isNaN(n) && n > 1000000000) {
-    const d2 = new Date(n * (n < 2000000000 ? 1000 : 1));
-    if (!isNaN(d2.getTime())) return d2;
-  }
-  return null;
-}
+  // Auto race state
+  let autoEnabled = false;
+  let autoIndex = 0;                 // which robot in sequence we are waiting/running
+  let lastAutoSentAt = 0;            // spam guard
+  const AUTO_COOLDOWN_MS = 2500;     // don't resend START too often
+  const FINISH_KEYWORD = "race finished"; // must appear in last_data to mark finished
 
-function normalizePayload(payload) {
-  // Accept array OR dict OR wrapped objects
-  if (Array.isArray(payload)) return payload;
-
-  if (payload && typeof payload === "object") {
-    // If wrapped like {robots:[...]} or {data:[...]}
-    if (Array.isArray(payload.robots)) return payload.robots;
-    if (Array.isArray(payload.data)) return payload.data;
-
-    const keys = Object.keys(payload);
-    if (!keys.length) return [];
-
-    // dict of strings: {"R1":"...", "R2":"..."}
-    if (typeof payload[keys[0]] === "string") {
-      return keys.map(k => ({
-        robot_id: k,
-        robot_name: k,
-        ping_count: 0,
-        last_seen: null,
-        last_data: payload[k] || ""
-      }));
-    }
-
-    // dict of objects: {"R1":{...}}
-    return keys.map(k => {
-      const v = payload[k];
-      if (v && typeof v === "object") {
-        return {
-          robot_id: v.robot_id || k,
-          robot_name: v.robot_name || k,
-          ping_count: v.ping_count || 0,
-          last_seen: v.last_seen || null,
-          last_data: v.last_data || v.message || ""
-        };
-      }
-      return { robot_id: k, robot_name: k, ping_count: 0, last_seen: null, last_data: String(v) };
-    });
-  }
-  return [];
-}
-
-function pickRobotForSlot(slot, robots) {
-  // match by robot_id or robot_name, case-insensitive, plus partial R1/R2/R3
-  const aliases = slot.aliases.map(a => String(a).toLowerCase());
-  const best = robots.find(r => aliases.includes(String(r.robot_id || "").toLowerCase()))
-            || robots.find(r => aliases.includes(String(r.robot_name || "").toLowerCase()))
-            || robots.find(r => {
-                 const rid = String(r.robot_id || "").toLowerCase();
-                 return aliases.some(a => rid === a || rid.includes(a));
-               });
-  if (best) return best;
-
-  // fallback empty
-  return {
-    robot_id: slot.aliases[0],
-    robot_name: slot.key,
-    ping_count: 0,
-    last_seen: null,
-    last_data: ""
+  // Keep last-known values so a "Turning Left" message doesn't erase speed/distance
+  const cache = {
+    "Pink Panther": { speed: "-", distance: "-", action: "No data", raw: "", seen: null },
+    "James Bond":   { speed: "-", distance: "-", action: "No data", raw: "", seen: null },
+    "BDP":          { speed: "-", distance: "-", action: "No data", raw: "", seen: null }
   };
-}
 
-function parseTelemetry(lastData) {
-  const text = (lastData || "").toString().trim();
-  const L = text.toLowerCase();
+  function safeDate(x) {
+    if (!x) return null;
+    let d = new Date(x);
+    if (!isNaN(d.getTime())) return d;
+    if (typeof x === "string" && x.includes(" ") && !x.includes("T")) {
+      d = new Date(x.replace(" ", "T"));
+      if (!isNaN(d.getTime())) return d;
+    }
+    const n = Number(x);
+    if (!Number.isNaN(n) && n > 1000000000) {
+      const d2 = new Date(n * (n < 2000000000 ? 1000 : 1));
+      if (!isNaN(d2.getTime())) return d2;
+    }
+    return null;
+  }
 
-  let action = "";
-  if (L.includes("turning left")) action = "Turning Left";
-  else if (L.includes("turning right")) action = "Turning Right";
-  else if (L.includes("going straight") || L.includes("moveforward") || L.includes("pid")) action = "Going Straight";
-  else if (L.includes("lost the line")) action = "Searching (Lost line)";
-  else if (L.includes("waiting")) action = "Waiting";
-  else if (L.includes("started the race")) action = "Started Race";
-  else if (L.includes("object") || L.includes("obstacle")) action = "Obstacle Detected";
-  else if (text.length) action = text;
-  else action = "No data";
+  function normalizePayload(payload) {
+    if (Array.isArray(payload)) return payload;
 
-  let speed = "";
-  const m = text.match(/motor\s*speed\s*:\s*([0-9.]+)/i);
-  if (m) speed = m[1];
+    if (payload && typeof payload === "object") {
+      if (Array.isArray(payload.robots)) return payload.robots;
+      if (Array.isArray(payload.data)) return payload.data;
 
-  let distance = "";
-  const d = text.match(/distance\s*:\s*([0-9.]+)/i);
-  if (d) distance = d[1];
+      const keys = Object.keys(payload);
+      if (!keys.length) return [];
 
-  return { action, speed, distance, raw: text };
-}
-
-function getStatusProps(statusText, isOffline) {
-  if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
-  const L = (statusText||"").toLowerCase();
-  if (L.includes("object") || L.includes("obstacle")) return { fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle' };
-  if (L.includes("wait")) return { fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting' };
-  if (L.length > 1) return { fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving' };
-  return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
-}
-
-function isOfflineRobot(r) {
-  // Prefer timestamps
-  const d = safeDate(r.last_seen);
-  if (d) return (Date.now() - d.getTime()) > 10000; // 10s
-
-  // If we have any message, treat as online
-  const msg = String(r.last_data || "").trim();
-  if (msg && msg.toLowerCase() !== "no data") return false;
-
-  return true;
-}
-
-function formatCard(slotKey, r, isBig, selected) {
-  const offline = isOfflineRobot(r);
-  const st = getStatusProps(r.last_data, offline);
-  const tele = parseTelemetry(r.last_data);
-  const seen = safeDate(r.last_seen);
-  const seenStr = seen ? seen.toLocaleTimeString() : "-";
-
-  return `
-    <div class="${isBig?'robot-card-big':'robot-card'}${selected?' selected':''}"
-         data-key="${slotKey}" tabindex="0" title="Click me">
-      <div class="robot-title">${slotKey}</div>
-
-      <svg class="tesla-car-svg" viewBox="0 0 180 86">
-        <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
-        <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
-        <rect x="30" y="42" width="120" height="19" rx="9" fill="${st.fill}"/>
-        <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${st.glass}" fill-opacity="0.72"/>
-        <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
-        <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
-        <ellipse cx="31" cy="53" rx="4" ry="2" fill="${st.lights}" />
-        <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
-      </svg>
-
-      <div class="status-box ${st.status}">
-        ${offline ? "Offline" : tele.action}
-      </div>
-
-      <div class="metrics">
-        <div class="metric-line"><b>Speed:</b> ${offline ? "-" : (tele.speed || "-")}</div>
-        <div class="metric-line"><b>Distance:</b> ${offline ? "-" : (tele.distance || "-")}</div>
-        <div class="muted">Seen: ${seenStr}</div>
-        <div class="raw">${tele.raw ? tele.raw : ""}</div>
-      </div>
-
-      ${isBig ? `
-        <div id="focus-controls">
-          <button class="control-btn" onclick="sendRobotCommand('${slotKey}','START');event.stopPropagation();">&#9654; On</button>
-          <button class="control-btn off" onclick="sendRobotCommand('${slotKey}','STOP');event.stopPropagation();">&#9632; Off</button>
-        </div>
-      ` : ''}
-    </div>
-  `;
-}
-
-async function fetchRobots() {
-  const top = document.getElementById("top-info");
-  const debug = document.getElementById("debug");
-
-  try {
-    const res = await fetch("/api/robots", { cache: "no-store" });
-    const text = await res.text();
-
-    // If the API ever returns HTML/error, show it in debug
-    let payload;
-    try {
-      payload = JSON.parse(text);
-    } catch (e) {
-      if (debug) {
-        debug.style.display = "block";
-        debug.textContent = "API returned non-JSON:\n\n" + text.slice(0, 2000);
+      if (typeof payload[keys[0]] === "string") {
+        return keys.map(k => ({
+          robot_id: k,
+          robot_name: k,
+          ping_count: 0,
+          last_seen: null,
+          last_data: payload[k] || ""
+        }));
       }
-      if (top) top.textContent = "Live • but API returned non-JSON (see debug)";
+
+      return keys.map(k => {
+        const v = payload[k];
+        if (v && typeof v === "object") {
+          return {
+            robot_id: v.robot_id || k,
+            robot_name: v.robot_name || k,
+            ping_count: v.ping_count || 0,
+            last_seen: v.last_seen || null,
+            last_data: v.last_data || v.message || ""
+          };
+        }
+        return { robot_id: k, robot_name: k, ping_count: 0, last_seen: null, last_data: String(v) };
+      });
+    }
+    return [];
+  }
+
+  function pickRobotForSlot(slot, robots) {
+    const aliases = slot.aliases.map(a => String(a).toLowerCase());
+    const best =
+      robots.find(r => aliases.includes(String(r.robot_id || "").toLowerCase())) ||
+      robots.find(r => aliases.includes(String(r.robot_name || "").toLowerCase())) ||
+      robots.find(r => {
+        const msg = String(r.last_data || "").toLowerCase();
+        return aliases.some(a => msg.startsWith(a.toLowerCase() + " ") || msg.startsWith(a.toLowerCase() + ":"));
+      });
+
+    if (best) return best;
+
+    return {
+      robot_id: slot.aliases[0],
+      robot_name: slot.key,
+      ping_count: 0,
+      last_seen: null,
+      last_data: ""
+    };
+  }
+
+  function parseTelemetry(lastData) {
+    const text = (lastData || "").toString().trim();
+    const L = text.toLowerCase();
+
+    let action = "";
+    if (L.includes("race finished")) action = "Race Finished";
+    else if (L.includes("dropping cone")) action = "Dropping Cone";
+    else if (L.includes("started the race")) action = "Started Race";
+    else if (L.includes("waiting for start")) action = "Waiting for start";
+    else if (L.includes("turning left")) action = "Turning Left";
+    else if (L.includes("turning right")) action = "Turning Right";
+    else if (L.includes("lost the line")) action = "Searching (Lost line)";
+    else if (L.includes("object found") || L.includes("obstacle")) action = "Obstacle Detected";
+    else if (L.includes("robot online")) action = "Online";
+    else if (L.includes("motor speed")) action = "Moving";
+    else if (text.length) action = text;
+    else action = "No data";
+
+    let speed = null;
+    const m = text.match(/motor\s*speed\s*:\s*([0-9.]+)/i);
+    if (m) speed = m[1];
+
+    let distance = null;
+    const d = text.match(/distance\s*:\s*([0-9.]+)/i);
+    if (d) distance = d[1];
+
+    return { action, speed, distance, raw: text };
+  }
+
+  function isOfflineRobot(r) {
+    const msg = String(r.last_data || "").trim();
+    if (msg && msg.toLowerCase() !== "no data") return false;
+
+    const d = safeDate(r.last_seen);
+    if (d) return (Date.now() - d.getTime()) > 10000;
+    return true;
+  }
+
+  function getStatusProps(actionText, isOffline) {
+    if (isOffline) return { fill:'#888', glass:'#cccccc', lights:'#adacac', status:'offline' };
+    const L = (actionText||"").toLowerCase();
+    if (L.includes("finished")) return { fill:'#c7a6ff', glass:'#fff', lights:'#fffbe0', status:'finished' };
+    if (L.includes("obstacle")) return { fill:'#ff4848', glass:'#ffd7c0', lights:'#ffe3d6', status:'obstacle' };
+    if (L.includes("wait")) return { fill:'#ffd700', glass:'#fffbe4', lights:'#fffbe0', status:'waiting' };
+    return { fill:'#23bffe', glass:'#fff', lights:'#fffbe0', status:'moving' };
+  }
+
+  function updateCache(slotKey, r) {
+    const t = parseTelemetry(r.last_data);
+
+    if (t.raw) cache[slotKey].raw = t.raw;
+    if (t.action && t.action !== "No data") cache[slotKey].action = t.action;
+
+    // only overwrite speed/distance when present
+    if (t.speed !== null) cache[slotKey].speed = t.speed;
+    if (t.distance !== null) cache[slotKey].distance = t.distance;
+
+    const d = safeDate(r.last_seen);
+    if (d) cache[slotKey].seen = d;
+  }
+
+  function formatCard(slotKey, r, isBig, selected) {
+    const offline = isOfflineRobot(r);
+    if (!offline) updateCache(slotKey, r);
+
+    const action = offline ? "Offline" : (cache[slotKey].action || "Online");
+    const st = getStatusProps(action, offline);
+
+    const speed = offline ? "-" : (cache[slotKey].speed || "-");
+    const dist  = offline ? "-" : (cache[slotKey].distance || "-");
+    const raw   = offline ? "" : (cache[slotKey].raw || "");
+
+    const seen = cache[slotKey].seen;
+    const seenStr = seen ? seen.toLocaleTimeString() : "-";
+
+    return `
+      <div class="${isBig?'robot-card-big':'robot-card'}${selected?' selected':''}"
+           data-key="${slotKey}" tabindex="0" title="Click me">
+        <div class="robot-title">${slotKey}</div>
+
+        <svg class="tesla-car-svg" viewBox="0 0 180 86">
+          <ellipse cx="90" cy="80" rx="65" ry="6" fill="#232c33" opacity="0.21"/>
+          <rect x="27" y="44" width="126" height="23" rx="11" fill="#15171a"/>
+          <rect x="30" y="42" width="120" height="19" rx="9" fill="${st.fill}"/>
+          <rect x="75" y="37" width="30" height="13" rx="6.5" fill="${st.glass}" fill-opacity="0.72"/>
+          <circle cx="47" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+          <circle cx="133" cy="72" r="12" fill="#222" stroke="#111" stroke-width="3"/>
+          <ellipse cx="31" cy="53" rx="4" ry="2" fill="${st.lights}" />
+          <ellipse cx="148" cy="53" rx="4" ry="2" fill="${st.lights}" />
+        </svg>
+
+        <div class="status-box ${st.status}">${action}</div>
+
+        <div class="metrics">
+          <div class="metric-line"><b>Speed:</b> ${speed}</div>
+          <div class="metric-line"><b>Distance:</b> ${dist}</div>
+          <div class="muted">Seen: ${seenStr}</div>
+          <div class="raw">${raw}</div>
+        </div>
+
+        ${isBig ? `
+          <div id="focus-controls">
+            <button class="control-btn" onclick="sendRobotCommand('${slotKey}','START');event.stopPropagation();">&#9654; On</button>
+            <button class="control-btn off" onclick="sendRobotCommand('${slotKey}','STOP');event.stopPropagation();">&#9632; Off</button>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  function render() {
+    const dash = document.getElementById("dashboard-flex");
+    if (!dash) return;
+
+    if (focusRobotKey) {
+      const big = allRobots.find(x => x.slot === focusRobotKey);
+      const minis = allRobots.filter(x => x.slot !== focusRobotKey);
+
+      dash.innerHTML = "";
+      dash.innerHTML += formatCard(big.slot, big.data, true, true);
+      dash.innerHTML += `<div id="sidebar-right"></div>`;
+      const sidebar = document.getElementById("sidebar-right");
+      minis.forEach(m => sidebar.innerHTML += formatCard(m.slot, m.data, false, false));
+
+      document.querySelectorAll(".robot-card, .robot-card-big").forEach(el => {
+        const k = el.getAttribute("data-key");
+        el.onclick = () => { focusRobotKey = (k === focusRobotKey) ? null : k; render(); };
+        el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = (k === focusRobotKey) ? null : k; render(); } };
+      });
+    } else {
+      dash.innerHTML = allRobots.map(x => formatCard(x.slot, x.data, false, false)).join("");
+      document.querySelectorAll(".robot-card").forEach(el => {
+        el.onclick = () => { focusRobotKey = el.getAttribute("data-key"); render(); };
+        el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = el.getAttribute("data-key"); render(); } };
+      });
+    }
+  }
+
+  async function sendRobotCommand(robotName, cmd) {
+    // robotName must be "Pink Panther"/"James Bond"/"BDP" because your app.py expects that
+    try {
+      await fetch('/api/command', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ robot_id: robotName, command: cmd })
+      });
+    } catch (e) {}
+  }
+
+  // --- Auto Race logic ---
+  function robotFinished(slotKey) {
+    const raw = (cache[slotKey]?.raw || "").toLowerCase();
+    const action = (cache[slotKey]?.action || "").toLowerCase();
+    return raw.includes(FINISH_KEYWORD) || action.includes(FINISH_KEYWORD);
+  }
+
+  function robotHasAnyActivity(slotKey) {
+    const raw = (cache[slotKey]?.raw || "").toLowerCase();
+    const action = (cache[slotKey]?.action || "").toLowerCase();
+    // anything other than offline/no data counts
+    if (!raw && (!action || action === "no data")) return false;
+    if (action === "offline") return false;
+    return true;
+  }
+
+  async function stepAutoRace() {
+    const stateEl = document.getElementById("autoState");
+    if (!autoEnabled) {
+      if (stateEl) stateEl.textContent = "Auto: idle";
       return;
     }
 
-    // Uncomment if you want to see live JSON on page:
-    // debug.style.display = "block";
-    // debug.textContent = JSON.stringify(payload, null, 2).slice(0, 2000);
+    // done?
+    if (autoIndex >= sequence.length) {
+      if (stateEl) stateEl.textContent = "Auto: done ✅";
+      autoEnabled = false;
+      updateAutoButton();
+      return;
+    }
 
-    const robotsArr = normalizePayload(payload);
+    const current = sequence[autoIndex];
 
-    // Build the 3 slots, always
-    allRobots = slots.map(s => ({ slot: s.key, data: pickRobotForSlot(s, robotsArr) }));
+    // if current finished -> move next and start next quickly
+    if (robotFinished(current)) {
+      autoIndex++;
+      if (autoIndex >= sequence.length) {
+        if (stateEl) stateEl.textContent = "Auto: done ✅";
+        autoEnabled = false;
+        updateAutoButton();
+        return;
+      }
+    }
 
-    if (top) top.textContent = `Live • last update ${new Date().toLocaleTimeString()}`;
-    render();
-  } catch (e) {
-    if (top) top.textContent = "Disconnected • retrying…";
+    const active = sequence[autoIndex];
+    if (stateEl) stateEl.textContent = `Auto: waiting on ${active}`;
+
+    // spam guard
+    const now = Date.now();
+    if (now - lastAutoSentAt < AUTO_COOLDOWN_MS) return;
+
+    // If active robot is offline, don't spam START
+    // (we treat offline if action is Offline)
+    const a = (cache[active]?.action || "").toLowerCase();
+    if (a === "offline") return;
+
+    // If it isn't finished, make sure it gets START at least once
+    // We also allow re-START if it looks stuck "Waiting for start"
+    const raw = (cache[active]?.raw || "").toLowerCase();
+    const looksWaiting = raw.includes("waiting for start") || a.includes("waiting");
+
+    // Send START if we have no activity yet OR it still looks waiting
+    if (!robotHasAnyActivity(active) || looksWaiting) {
+      lastAutoSentAt = now;
+      await sendRobotCommand(active, "START");
+      if (stateEl) stateEl.textContent = `Auto: sent START to ${active}`;
+    }
   }
-}
 
-function render() {
-  const dash = document.getElementById("dashboard-flex");
-  if (!dash) return;
-
-  if (focusRobotKey) {
-    const big = allRobots.find(x => x.slot === focusRobotKey);
-    const minis = allRobots.filter(x => x.slot !== focusRobotKey);
-
-    dash.innerHTML = "";
-    dash.innerHTML += formatCard(big.slot, big.data, true, true);
-    dash.innerHTML += `<div id="sidebar-right"></div>`;
-    const sidebar = document.getElementById("sidebar-right");
-
-    minis.forEach(m => { sidebar.innerHTML += formatCard(m.slot, m.data, false, false); });
-
-    document.querySelectorAll(".robot-card, .robot-card-big").forEach(el => {
-      const k = el.getAttribute("data-key");
-      el.onclick = () => { focusRobotKey = (k === focusRobotKey) ? null : k; render(); };
-      el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = (k === focusRobotKey) ? null : k; render(); } };
-    });
-
-  } else {
-    dash.innerHTML = allRobots.map(x => formatCard(x.slot, x.data, false, false)).join("");
-
-    document.querySelectorAll(".robot-card").forEach(el => {
-      el.onclick = () => { focusRobotKey = el.getAttribute("data-key"); render(); };
-      el.onkeyup = (e) => { if (e.key === "Enter") { focusRobotKey = el.getAttribute("data-key"); render(); } };
-    });
+  function updateAutoButton() {
+    const btn = document.getElementById("autoBtn");
+    if (!btn) return;
+    btn.textContent = autoEnabled ? "▶ Auto Race: ON" : "▶ Auto Race: OFF";
+    btn.className = autoEnabled ? "btn btn-auto" : "btn btn-auto";
   }
-}
 
-function sendRobotCommand(robotKey, cmd) {
-  fetch('/api/command', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ robot_id: robotKey, command: cmd })
-  })
-  .then(r => r.json())
-  .catch(() => {});
-}
+  async function stopAll() {
+    // stop every robot (manual safety)
+    await sendRobotCommand("Pink Panther", "STOP");
+    await sendRobotCommand("James Bond", "STOP");
+    await sendRobotCommand("BDP", "STOP");
+  }
 
-fetchRobots();
-setInterval(fetchRobots, 1000);
+  async function fetchRobots() {
+    const top = document.getElementById("top-info");
+
+    try {
+      const res = await fetch("/api/robots", { cache: "no-store" });
+      const payload = await res.json();
+      const robotsArr = normalizePayload(payload);
+
+      allRobots = slots.map(s => ({ slot: s.key, data: pickRobotForSlot(s, robotsArr) }));
+
+      if (top) top.textContent = `Live • last update ${new Date().toLocaleTimeString()}`;
+      render();
+
+      // after rendering/updating cache, run auto step
+      await stepAutoRace();
+    } catch (e) {
+      if (top) top.textContent = "Disconnected • retrying…";
+    }
+  }
+
+  // UI buttons
+  document.getElementById("autoBtn").onclick = async () => {
+    autoEnabled = !autoEnabled;
+    if (autoEnabled) {
+      autoIndex = 0;
+      lastAutoSentAt = 0;
+      // also stop all first (optional, but avoids weird states)
+      await stopAll();
+    }
+    updateAutoButton();
+  };
+
+  document.getElementById("stopAllBtn").onclick = async () => {
+    autoEnabled = false;
+    updateAutoButton();
+    await stopAll();
+    const stateEl = document.getElementById("autoState");
+    if (stateEl) stateEl.textContent = "Auto: stopped ■";
+  };
+
+  updateAutoButton();
+  fetchRobots();
+  setInterval(fetchRobots, 800);
 </script>
 </body>
 </html>
